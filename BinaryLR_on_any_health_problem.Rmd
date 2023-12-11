@@ -1,0 +1,6437 @@
+---
+title: "R stats for binary logistic regression on the ANY HEALTH PROBLEM outcome variable"
+author: "Alex German"
+date: "7 December 2023"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  html_notebook: default
+---
+
+
+# Create data frame for analysis
+### NB need to run "Read_data_101.RMD" first to create dataset
+```{r include=FALSE}
+knitr::knit("Read_data_101.rmd")
+```
+
+
+
+# LET'S DO SOME INTIAL TABULATION AND CHI SQUARE TESTS
+
+## Tabulate D_Sex + D_Neuter + D_Diet
+```{r 1}
+## three way cross tabs (xtabs) and flatten the table
+ftable(xtabs(~ D_Sex + D_Neuter + D_Diet, data = ml))
+```
+
+## Tabulate D_Neuter + D_Diet
+```{r 2}
+## two way cross tabs (xtabs) and flatten the table
+ftable(xtabs(~ D_Neuter + D_Diet, data = ml))
+```
+
+## Tabulate C_Diet_Vegan + D_Diet_Vegan
+```{r 3}
+## two way cross tabs (xtabs) and flatten the table
+ftable(xtabs(~ C_Diet_Vegan + D_Diet_Vegan, data = ml))
+```
+
+## Tabulate C_Diet_Vegan_Veggie + D_Diet_Vegan_Veggie
+```{r 4}
+## two way cross tabs (xtabs) and flatten the table
+ftable(xtabs(~ C_Diet_Vegan_Veggie + D_Diet_Vegan_Veggie, data = ml))
+```
+
+## Tabulate D_Sex, D_Neuter and D_Raw
+```{r 5}
+## three way cross tabs (xtabs) and flatten the table
+ftable(xtabs(~ D_Sex + D_Neuter + D_Diet_Raw, data = ml))
+```
+
+
+# Tabulate D_Neuter and D_Raw
+```{r 6}
+## two way cross tabs (xtabs) and flatten the table
+ftable(xtabs(~ D_Neuter + D_Diet_Raw, data = ml))
+```
+
+
+## Chi squared test of C_VEGAN vs D-VEGAN
+```{r 7}
+
+table(ml$C_Diet_Vegan, ml$D_Diet_Vegan)
+chisq.test(ml$C_Diet_Vegan, ml$D_Diet_Vegan, correct=FALSE)
+```
+
+
+## Chi squared test of NEUTERED vs D-RAW
+```{r 8}
+
+table(ml$D_Neuter, ml$D_Diet_Raw)
+chisq.test(ml$D_Neuter, ml$D_Diet_Raw, correct=FALSE)
+```
+
+
+
+## Tabulate Health_Binary and Income
+```{r I57}
+## three way cross tabs (xtabs) and flatten the table
+ftable(xtabs(~ Health_Binary + Income, data = ml))
+```
+
+## Chi squared test of Health_Binary and Income
+```{r I58}
+
+table(ml$Health_Binary, ml$Income)
+chisq.test(ml$Health_Binary, ml$Income, correct=FALSE)
+```
+
+
+
+
+# BINARY LOGISTIC REGRESSION ON HEALTH
+
+# CHECK EFFECT OF OWNER CHARACTERISTICS - simple binary logistic regression
+
+
+## CLIENT DIET Binary regression for Any_Health_Problem
+```{r 9g}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ C_Diet, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r 9ag}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r 10g}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 11g}
+model.data <- broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 12g}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r 13g}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+
+### Create ROCR for training and test data
+```{r ROC1}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC1}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## CLIENT DIET VEGAN Binary regression for Any_Health_Problem
+```{r 9}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ C_Diet_Vegan, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r 9a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r 10}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 11}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 12}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+# Filter potential influential data points with abs(.std.res) > 3:
+```{r 13}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC2}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC2}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+## C_Diet_Vegan_Veggie Binary logistic regression for HEALTH
+```{r I84}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ C_Diet_Vegan_Veggie, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r I84a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I85}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I86}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I87}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I88}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+
+### Create ROCR for training and test data
+```{r ROC3}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC3}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+## LOCATION binary logistic regression for HEALTH
+```{r I9}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Location, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+glmtoolbox::hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I9a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I10}
+plot(m, which = 4, id.n = 3)
+```
+
+# Extract model results and display data for top 3 values using Cook's distance
+```{r I11}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I12}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I13}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC4}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC4}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## SETTING binary logistic regression for HEALTH
+```{r I14}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ setting, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+glmtoolbox::hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I14a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I15}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I16}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I17}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I18}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+
+### Create ROCR for training and test data
+```{r ROC5}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Health_Binary) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Health_Binary)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC5}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## URBAN binary logistic regression for HEALTH
+```{r I19}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Urban, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+
+### Calculate Nagelkerke R^2
+```{r I19a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I20}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I21}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I22}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I23}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC6}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Health_Binary) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Health_Binary)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC6}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+## Location + URBAN binary logistic regression for HEALTH
+```{r I24}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Location + Urban, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I24a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I25}
+plot(m, which = 4, id.n = 3)
+```
+
+# Extract model results and display data for top 3 values using Cook's distance
+```{r I26}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I27}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I28}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r I29}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC7}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC7}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## LOCATION * URBAN binary logistic regression for HEALTH
+```{r I30}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Location*Urban, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+
+### Calculate Nagelkerke R^2
+```{r I30a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I31}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I32}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I33}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I34}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+# check for multicollinearity
+```{r I35}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC8}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC8}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## EDUCATION Binary logistic regression for HEALTH
+```{r I37}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Education, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+
+### Calculate Nagelkerke R^2
+```{r I37a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I38}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I39}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I40}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+# Filter potential influential data points with abs(.std.res) > 3:
+```{r I41}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC9}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC9}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## EDUCATION_S Binary logistic regression for HEALTH
+```{r I42}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Education_S, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=3)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+
+### Calculate Nagelkerke R^2
+```{r I42a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I43}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I44}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I45}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I46}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC10}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Health_Binary) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Health_Binary)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC10}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## EDUCATION_S Binary logistic regression for HEALTH
+```{r I42i}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Education_S2, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=3)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I42ai}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I43i}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I44i}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I45i}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I46i}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC11}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC11}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## ANIMAL CAREER 2 Binary logistic regression for HEALTH
+```{r I47}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Animal_Career2, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+
+### Calculate Nagelkerke R^2
+```{r I47a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I48}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I49}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I50}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I51}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC12}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC12}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## ANIMAL_CAREER_BINARY Binary logistic regression for HEALTH
+```{r I52}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Animal_Career_BINARY, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I52a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I53}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I54}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I55}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I56}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC13}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC13}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## INCOME Binary logistic regression for HEALTH
+```{r I59}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Income, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+glmtoolbox::hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I59a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I60}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I61}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I62}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I63}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC14}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC14}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## INCOME2 Binary logistic regression for HEALTH
+```{r I59i}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Income2, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+glmtoolbox::hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I59ai}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I60i}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I61i}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I62i}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I63i}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC15}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC15}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## C_AGE Binary logistic regression for HEALTH
+```{r I64}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ C_Age, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=4)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I64a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I65}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I66}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I67}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I68}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC16}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC16}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## C_AGE Binary logistic regression for HEALTH
+```{r I64i}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ C_Age2, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=4)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I64ai}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I65i}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I66i}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I67i}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I68i}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC17}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC17}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## C_GENDER Binary logistic regression for HEALTH
+```{r I69}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ C_Gender, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r I69a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I70}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I71}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I72}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I73}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+
+### Create ROCR for training and test data
+```{r ROC18}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC18}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+# NOW CHECK ASSOCIATIONS WITH DOG CHARACTERISTICS - simple BINARY LOGISTIC regression
+
+
+## DOG DIET ordinal regression for HEALTH
+```{r 14i}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Diet, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r 14ai}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r 15i}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 16i}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 17i}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r 18i}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+
+### Create ROCR for training and test data
+```{r ROC19}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC19}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## DOG DIET VEGAN ordinal regression for HEALTH
+```{r 14}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Diet_Vegan, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r 14a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r 15}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 16}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 17}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r 18}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC20}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC20}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## CLIENT DIET VEGAN + DOG DIET VEGAN ordinal regression for HEALTH
+```{r 19}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ C_Diet_Vegan + D_Diet_Vegan, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r 19a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r 20}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 21}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 22}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r 23}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r 24}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC21}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC21}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## CLIENT DIET VEGAN * DOG DIET VEGAN ordinal regression for HEALTH
+```{r 25}
+# fit binary logit model and store results 'm2'
+m <- glm(Any_Health_Problem ~ C_Diet_Vegan*D_Diet_Vegan, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+glmtoolbox::hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r 25a}
+NagelkerkeR2(m)
+```
+
+
+### check assumptions of model
+#### Cook's distance
+```{r 26}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 27}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 28}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r 29}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r 30}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC22}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC22}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## DOG DIET RAW ordinal regression for HEALTH
+```{r 32}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Diet_Raw, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r 32a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r 33}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 34}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 35}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r 36}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC23}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC23}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## DOG DIET + CLIENT DIET binary logistic regression for HEALTH
+```{r 78}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Diet + C_Diet , data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=7)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r 78a}
+NagelkerkeR2(m)
+```
+
+
+### check assumptions of model
+#### Cook's distance
+```{r 79}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 80}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 81}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r 82}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r 89}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC24}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC24}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## THERAPEUTIC DIET binary logistic regression for HEALTH
+```{r 90}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Therapeutic_Food, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r 90a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r 91}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 92}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 93}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r 94}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC25}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC25}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## DOG DIET + THERAPEUTIC DIET binary logistic regression for HEALTH
+```{r 95}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Diet + Therapeutic_Food, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=3)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r 95a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r 96}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 97}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 98}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r 99}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r I1}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC26}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC26}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## DOG DIET * THERAPEUTIC DIET binary logistic regression for HEALTH
+```{r I2}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Diet*Therapeutic_Food, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=7)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I2a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I3}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I4}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I6}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I7}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+#### check for multicollinearity
+#### Note interactions
+```{r I8}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC27}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC27}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## SIZE Binary logistic regression for HEALTH
+```{r I89}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Size, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r I2aq}
+NagelkerkeR2(m)
+```
+
+
+### check assumptions of model
+#### Cook's distance
+```{r I90}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I91}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I92}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I93}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC28}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC28}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## SIZE2 Binary logistic regression for HEALTH
+```{r I89ii}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Size2, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I89iiia}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I90ii}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I91ii}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I92ii}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I93ii}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC29}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC29}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## SIZE_GIANT Binary logistic regression for HEALTH
+```{r I89iii}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Size_Giant, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I90iiia}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I90iii}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I91iii}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I92iii}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I93iii}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC30}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC30}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## D_AGE Binary logistic regression for HEALTH
+```{r I94}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Age, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I94a}
+NagelkerkeR2(m)
+```
+
+### Check age is linear with logit of outcome
+#### Note lack of linearity
+```{r I95}
+ypred = predict(m)
+res = residuals(m, type = 'deviance')
+plot(ypred,res)
+```
+
+
+### Box Tidwell test to check that D_Age is linearly associated with the logit of the outcome
+#### suggests not linear
+```{r I96}
+boxTidwell(ml$Health_Binary ~ ml$D_Age)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r I97}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I98}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I99}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I100}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC31}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC31}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## D_AGE Binary logistic regression for HEALTH - with splines
+```{r I94q}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+#### Where are the knots?
+```{r splineK}
+## To see what knots were selected
+attr(terms(m), "predvars")
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r I94aq}
+NagelkerkeR2(m)
+```
+
+
+
+### check assumptions of model
+#### Cook's distance
+```{r I97q}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r I98q}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r I99q}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r I100q}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC31q}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC31q}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+## D_Age_quant logistic regression for HEALTH
+#### Note worse model fit than D-Age
+```{r II1}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Age_quant, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=4)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r II1aa}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r II1a}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r II2}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r II3}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r II4}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC32}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC32}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## DOG SEX binary logistic regression for HEALTH
+```{r 37g}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Sex, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r 37ag}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r 38g}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 39g}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 40g}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r 41g}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC33}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC33}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## DOG NEUTER binary logistic regression for HEALTH
+```{r 37}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Neuter, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r 37a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r 38}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r 39}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r 40}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r 41}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+
+### Create ROCR for training and test data
+```{r ROC34}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC34}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+## D_Sex + D_Neuter Binary logistic regression for HEALTH
+```{r II5}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Sex + D_Neuter, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r II5a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r II6}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r II7}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r II8}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r II9}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r II10}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC35}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC35}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## D_Sex * D_Neuter Binary logistic regression for HEALTH
+```{r II11}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ D_Sex*D_Neuter, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r II11a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r II12}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r II13}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r II14}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r II15}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r II16}
+car::vif(m)
+```
+
+
+
+### Create ROCR for training and test data
+```{r ROC36}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC36}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+# CHECK EFFECT OF DOG HEALTH CHARACTERISTICS - simple binary regression
+
+## THERAPEUTIC FOOD Binary logistic regression for HEALTH
+```{r II27}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Therapeutic_Food, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r II27a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r II28}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r II29}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r II30}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r II31}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC37}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC37}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## VISITS Binary logistic regression for HEALTH
+```{r II32}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Visits, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r II32a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r II33}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r II34}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r II35}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r II36}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC38}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC38}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## VISITS2 Binary logistic regression for HEALTH
+#### Note Visits better fit than Visits2
+```{r II37}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Visits2, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r II37a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r II37aa}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r II38}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r II39}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r II40}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC39}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC39}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+## MEDS Binary logistic regression for HEALTH
+```{r II41}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Meds, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r II41a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r II42}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r II43}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r II44}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+# Filter potential influential data points with abs(.std.res) > 3:
+```{r II45}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+
+
+### Create ROCR for training and test data
+```{r ROC40}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC40}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 1: Model with all variables
+#### D_Age included as continuous and Animal Career as a binary
+#### D_Size included as factor not ordered
+```{r II46ua}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Location + Urban + Education_S + Animal_Career_BINARY 
+         + Income2 + C_Age2 + C_Gender + C_Diet + Size2 + D_Sex + D_Neuter  + D_Diet + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aa}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18a}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19a}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20a}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21a}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22a}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57a}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57a}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 2: Model with all variables
+Switch Location + Urban with Location*Urban given simple regression results
+```{r II46ub}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Location*Urban + Education_S + Animal_Career_BINARY 
+         + Income2 + C_Age2 + C_Gender + C_Diet + Size2 + D_Sex + D_Neuter  + D_Diet + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aab}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18ab}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19ab}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20ab}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21ab}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22ab}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57ab}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57ab}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 3: Model with all variables
+Try removing Location
+```{r II46uc}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Urban + Education_S + Animal_Career_BINARY 
+         + Income2 + C_Age2 + C_Gender + C_Diet + Size2 + D_Sex + D_Neuter  + D_Diet + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aac}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18ac}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19ac}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20ac}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21ac}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22ac}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57ac}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57ac}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 4: Model with all variables
+Try removing Urban
+```{r II46ud}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Education_S + Animal_Career_BINARY 
+         + Income2 + C_Age2 + C_Gender + C_Diet + Size2 + D_Sex + D_Neuter  + D_Diet + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aad}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18ad}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19ad}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20ad}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21ad}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22ad}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57ad}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57ad}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 6: Model with all variables
+Try removing C_Diet
+```{r II46uf}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Animal_Career_BINARY 
+         + Income2 + C_Age2 + C_Gender + Size2 +D_Neuter  + D_Diet + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aae}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18ae}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19ae}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20ae}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21ae}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22ae}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57ae}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57ae}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 7: Model with all variables
+Try removing Animal_Career_BINARY
+```{r II46ufs}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Income2 + C_Age2 + C_Gender + Size2 +D_Neuter  + D_Diet + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aag}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18ag}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19ag}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20ag}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21ag}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22ag}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57ag}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57ag}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 7b: Model with all variables
+Replace Size2 with Size_Giant
+```{r II46ug}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Income2 + C_Age2 + C_Gender + Size_Giant + D_Diet + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aah}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18ah}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19ah}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20ah}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21ah}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22ah}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57ah}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57ah}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 8: Model with all variables
+Remove C_Gender
+```{r II46uh}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Income2 + C_Age2 + Size_Giant + D_Diet + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aai}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18ai}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19ai}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20ai}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21ai}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22ai}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57ai}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57ai}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 8: Model with all variables
+Remove Income2
+```{r II46uhj}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  C_Age2 + Size_Giant + D_Diet + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+### Calculate Nagelkerke R^2
+```{r III17aaj}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18aj}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19aj}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20aj}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21aj}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22aj}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57aj}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57aj}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 9: Model with all variables
+Replace D_Diet with D_Diet_Vegan
+```{r II46ui}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  C_Age2 + Size_Giant + D_Diet_Vegan + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aak}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18ak}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19ak}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20ak}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21ak}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22ak}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57ak}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57ak}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 10: Model with all variables
+Remove Size_Giant
+```{r II46uj}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  C_Age2 + D_Diet_Vegan + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aal}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18al}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19al}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20al}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21al}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22al}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57al}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57al}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 11: Model with all variables
+Remove C_Age2
+```{r II46uk}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  D_Diet_Vegan + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aam}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18am}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19am}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20am}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21am}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22am}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57am}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57am}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## ROUND 12: Model with all variables
+Remove D_Diet_Vegan
+```{r II46ul}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III17aan}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18an}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19an}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20an}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21an}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22an}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57an}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57an}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+## SO THIS IS THE LIKELY TO BE THE FINAL BEST FIT MODEL FOR BINARY LOGISTIC REGRESSION
+```{r III17}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Therapeutic_Food 
+         + bs(D_Age,degree=1,df=2) + Visits + Meds, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=9)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r III17a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III18}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III19}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III20}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III21}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III22}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC57}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC57}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION BASED ON BIC
+## SO THIS IS THE FINAL BEST FIT MODEL FOR BINARY LOGISTIC REGRESSION
+### just check that all variables are needed... first remove D_Age
+```{r III23}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Therapeutic_Food +
+         + Visits + Meds, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=9)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r III23a}
+NagelkerkeR2(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC58}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC58}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION BASED ON BIC
+## SO THIS IS THE FINAL BEST FIT MODEL FOR BINARY LOGISTIC REGRESSION
+#### just check that all variables are needed... next remove Visits
+```{r III24}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Therapeutic_Food 
+         + D_Age + Meds, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=9)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+#### Calculate Nagelkerke R^2
+```{r III24a}
+NagelkerkeR2(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC59}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC59}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION BASED ON BIC
+## SO THIS IS THE FINAL BEST FIT MODEL FOR BINARY LOGISTIC REGRESSION
+### just check that all variables are needed... now, try removing Meds
+```{r III25}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ Therapeutic_Food 
+         + D_Age + Visits, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=9)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r III25a}
+NagelkerkeR2(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC60}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC60}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+# MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION BASED ON BIC
+## SO THIS IS THE FINAL BEST FIT MODEL FOR BINARY LOGISTIC REGRESSION
+### just check that all variables are needed... now, try removing therapeutic food
+```{r III26}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ bs(D_Age,degree=1,df=2) + Visits + Meds, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m, G=9)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r III26a}
+NagelkerkeR2(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC61}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC61}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+# DEFINITELY THE BEST FIT FINAL BINARY LOGISTIC REGRESSION MODEL
+## MULTIPLE REGRESSION WITH BACKWARDS ELIMINATION
+### SO These ARE THE FINAL BEST FIT MODELS FOR BINARY LOGISTIC REGRESSION
+#### Model 1: D_Age + Visits + Meds + Therapeutic_Food
+```{r III27}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ bs(D_Age,degree=1,df=2) + Visits + Meds + Therapeutic_Food, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r III27a}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III28}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III29}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III29a}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III30}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III31}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC61a}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC61a}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+
+
+# Create Figure of first best fit model of binary health (healthy only)
+```{r fig1}
+boxLabels = c("D_Age<6", "D_Age>6", "Visits 1", "Visits 2", "Visits 3","Visits 4+","Meds", "Therapeutic food")
+# Enter OR and CI data. boxOdds are the odds ratios, 
+# boxCILow is the lower bound of the CI, boxCIHigh is the upper bound.
+df <- data.frame(yAxis = length(boxLabels):1, 
+                 boxOdds = c(2.08541055, 21.94827663, 1.18161907, 2.92554865, 2.69441497, 4.81942005, 6.12268253, 
+                             2.56650802), 
+                 boxCILow = c(1.16169713, 9.17818598, 0.70992184, 1.67139775, 1.32567006, 2.41492868, 4.29402867,  
+                              1.07109067), 
+                 boxCIHigh = c(3.7907704, 53.6523536, 2.0140319, 5.2257242, 5.5582456, 9.8473626, 8.7959263, 6.7308598))
+
+
+# Plot
+p <- ggplot(df, aes(x = boxOdds, y = boxLabels)) 
+
+p + geom_vline(aes(xintercept = 1), size = .25, linetype = "dashed") +
+  geom_errorbarh(aes(xmax = boxCIHigh, xmin = boxCILow), size = .5, height = 
+                   .2, color = "gray50") +
+  geom_point(size = 3.5, color = c("red", "red","blue", "red", "red", "red", "red", "red")) +
+  theme_bw() + 
+  theme(panel.grid.minor = element_blank()) +
+  scale_linewidth_binned() +
+  scale_x_log10(limits = c(0.06,100), breaks = c(0.12, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64)) +
+  ylab("") +
+  xlab("\nOdds ratio (log scale)") +
+  theme(axis.text = element_text(face="bold")) +
+  theme(axis.title.x = element_text(face="bold")) +
+  annotate(geom = "text", y =1.0, x = 24.0, label ="Model P < 0.001\nPseudo  R^2 = 0.420\nAUC = 0.842",
+           size = 3.0, hjust = 0) + ggtitle("Binary logistic regression: any health problem") +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("FigBR_anyHealth1.TIFF")
+```
+
+
+
+
+#### Model 2: D_Age + Visits + Meds + Therapeutic_Food + D_Diet_Vegan
+```{r III27i}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ bs(D_Age,degree=1,df=2) + Visits + Meds + Therapeutic_Food + D_Diet_Vegan, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r III27ai}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III28i}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III29i}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III29ai}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III30i}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III31i}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC61ai}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC61ai}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+# Create Figure of second best fit model of binary health (healthy only)
+```{r fig2}
+boxLabels = c("D_Age<6", "D_Age>6", "Visits 1", "Visits 2", "Visits 3","Visits 4+","Meds", "Therapeutic food", "Dog vegan diet")
+# Enter OR and CI data. boxOdds are the odds ratios, 
+# boxCILow is the lower bound of the CI, boxCIHigh is the upper bound.
+df <- data.frame(yAxis = length(boxLabels):1, 
+                 boxOdds = c(2.12732727, 24.06747978, 1.18915722, 2.94502459, 2.73242364, 4.76135632, 6.04770355, 2.60232573,
+                             0.68721597), 
+                 boxCILow = c(1.18421608, 9.95766224, 0.7146832, 1.68177553, 1.34212864, 2.38345647, 4.23726851, 1.08726463,
+                              0.41169772), 
+                 boxCIHigh = c(3.8701207, 59.529765, 2.0262851, 5.263175, 5.6489584, 9.7383742, 8.6954765, 6.8114578,
+                               1.1278292))
+
+
+# Plot
+p <- ggplot(df, aes(x = boxOdds, y = boxLabels)) 
+
+p + geom_vline(aes(xintercept = 1), size = .25, linetype = "dashed") +
+  geom_errorbarh(aes(xmax = boxCIHigh, xmin = boxCILow), size = .5, height = 
+                   .2, color = "gray50") +
+  geom_point(size = 3.5, color = c("red", "red","blue", "red", "red", "red", "red", "red", "blue")) +
+  theme_bw() + 
+  theme(panel.grid.minor = element_blank()) +
+  scale_linewidth_binned() +
+  scale_x_log10(limits = c(0.06,100), breaks = c(0.12, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64)) +
+  ylab("") +
+  xlab("\nOdds ratio (log scale)") +
+  theme(axis.text = element_text(face="bold")) +
+  theme(axis.title.x = element_text(face="bold")) +
+  annotate(geom = "text", y =1.0, x = 24.0, label ="Model P < 0.001\nPseudo  R^2 = 0.422\nAUC = 0.845",
+           size = 3.0, hjust = 0) + ggtitle("Binary logistic regression: any health problem") +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("FigBR_anyHealth2.TIFF")
+```
+
+
+
+
+
+#### Model 3: D_Age + Visits + Meds + Therapeutic_Food + C_Diet_Vegan
+```{r III27ii}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~ bs(D_Age,degree=1,df=2) + Visits + Meds + Therapeutic_Food + C_Diet_Vegan, data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r III27aii}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III28ii}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III29ii}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III29aii}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III30ii}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III31ii}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC61aii}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC61aii}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+
+# Create Figure of third best fit model of binary health (healthy only)
+```{r fig3}
+boxLabels = c("D_Age<6", "D_Age>6", "Visits 1", "Visits 2", "Visits 3","Visits 4+","Meds", "Therapeutic food", "Owner vegan diet")
+# Enter OR and CI data. boxOdds are the odds ratios, 
+# boxCILow is the lower bound of the CI, boxCIHigh is the upper bound.
+df <- data.frame(yAxis = length(boxLabels):1, 
+                 boxOdds = c(2.13108224, 24.32368806, 1.18613175, 2.93266974, 2.71291401, 4.78535576, 6.08801231,
+                             2.56380917, 0.76130443), 
+                 boxCILow = c(1.18509247, 10.0188445, 0.71249701, 1.6737809, 1.33284957, 2.39589141, 4.26636993, 1.07026379,
+                              0.50712725), 
+                 boxCIHigh = c(3.8812667, 60.4587825, 2.0223772, 5.2443436, 5.6063102, 9.7862883, 8.7525203, 6.7264968,
+                               1.1342062))
+
+
+# Plot
+p <- ggplot(df, aes(x = boxOdds, y = boxLabels)) 
+
+p + geom_vline(aes(xintercept = 1), size = .25, linetype = "dashed") +
+  geom_errorbarh(aes(xmax = boxCIHigh, xmin = boxCILow), size = .5, height = 
+                   .2, color = "gray50") +
+  geom_point(size = 3.5, color = c("red","red","blue", "red", "red", "red", "red", "red","blue")) +
+  theme_bw() + 
+  theme(panel.grid.minor = element_blank()) +
+  scale_linewidth_binned() +
+  scale_x_log10(limits = c(0.06,100), breaks = c(0.12, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64)) +
+  ylab("") +
+  xlab("\nOdds ratio (log scale)") +
+  theme(axis.text = element_text(face="bold")) +
+  theme(axis.title.x = element_text(face="bold")) +
+  annotate(geom = "text", y =1.0, x = 24.0, label ="Model P < 0.001\nPseudo  R^2 = 0.421\nAUC = 0.844",
+           size = 3.0, hjust = 0) + ggtitle("Binary logistic regression: any health problem") +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("FigBR_anyHealth3.TIFF")
+```
+
+
+
+
+
+
+
+# Finally, let's try models with all variables
+## Model with all variables including health-related variables (D_Diet and Therapeutic_Food)
+```{r III32x}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Location + Urban + Education_S + Animal_Career_BINARY 
+         + Income2 + C_Age2 + C_Gender + C_Diet + Size2 + D_Sex + D_Neuter  + D_Diet + Therapeutic_Food + Visits 
+         + Meds + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r III33x}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III34x}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III35x}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III36x}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III37x}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III38x}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC62}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC62}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+```{r}
+## odds ratios and 95% CI
+dfOR <- exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+# Create Figure of all-variable model ... Binary logistic regression on Any_Health_Problem
+```{r FigBR-anyHlth}
+
+boxLabels = c("Location: Other European","Location: North America","Location: Australia/New Zealand/Oceania","Location: Other","Urban","Education_S1_College","Education_S2_Grad","Education_S3_PG_or_PhD","Animal_Career_Yes","Income_Medium","Income_High","C_Age_30-39","C_Age_40-49","C_Age_50-59","C_Age_60+","C_Gender_Male","C_Diet_Omnivore","C_Diet_Pescatarian","C_Diet_Vegan","C_Diet_Vegetarian", "Size_Toy", "Size_Small","Size_Large", "Size_Giant", "D_Sex_Male","Neutered","D_Diet_Raw","D_Diet_Vegan","D_Diet_Vegetarian","Therapeutic food","Visits 1", "Visits 2", "Visits 3", "Visits 4+","Meds","D_Age<6", "D_Age>6")
+# Enter OR and CI data. boxOdds are the odds ratios, 
+# boxCILow is the lower bound of the CI, boxCIHigh is the upper bound.
+df <- data.frame(yAxis = length(boxLabels):1, 
+                 boxOdds = c(1.21744237, 1.08497899, 1.22401527, 1.22052187, 1.04471799, 1.0831584,
+                             0.89078926, 0.7147482, 0.82252942, 0.86292932, 0.66877739, 0.86409779,
+                             0.7578749, 0.56396957, 0.63311827, 0.70378005, 1.0481338, 1.50036631,
+                             0.84796185, 0.90153616, 1.57744451, 1.15463387, 1.10119493, 2.0655775,
+                             0.91945924, 1.05945785, 0.88403661, 0.62811413, 0.79065222, 2.4030114,
+                             1.16506864, 2.83952833, 2.5701712, 4.66427042, 6.30712269, 2.25465603, 33.02929365),
+                 boxCILow = c(0.68454558, 0.53202827, 0.52635553, 0.41724443, 0.72888545, 0.65656089,
+                              0.53512707, 0.41369349, 0.5318946, 0.5458388, 0.35542504, 0.5053598,
+                              0.43487054, 0.3219751, 0.3469284, 0.35101969, 0.67449139, 0.71364952,
+                              0.45943391, 0.49933066, 0.50953074, 0.73191912, 0.74624377, 0.91857325,
+                              0.65866929, 0.68631166, 0.60663297, 0.31011593, 0.20108466, 0.99094971
+                              , 0.68890793, 1.58327474, 1.23317779, 2.26892615, 4.36670715, 1.21083702, 12.71833705), 
+                 boxCIHigh = c(2.1680773, 2.1827056, 2.8360386, 3.4599984, 1.4941417, 1.7939998,
+                               1.4866187, 1.2336576, 1.2635526, 1.3710799, 1.2532869, 1.4773992,
+                               1.3187516, 0.9841104, 1.1510901, 1.3609829, 1.6235135, 3.1582011,
+                               1.5506934, 1.6126888, 4.5398035, 1.8173938, 1.6246287, 4.5625072,
+                               1.2829791, 1.646258, 1.2884734, 1.2635719, 2.9893268, 6.4062053,
+                               2.0147208, 5.1895352, 5.4346479, 9.8077004, 9.1890237, 4.2538095, 88.1561849))
+
+
+# Plot
+p <- ggplot(df, aes(x = boxOdds, y = boxLabels)) 
+p + geom_vline(aes(xintercept = 1), size = .25, linetype = "dashed") +
+  geom_errorbarh(aes(xmax = boxCIHigh, xmin = boxCILow), size = .5, height = 
+                   .2, color = "gray50") +
+  geom_point(size = 1.0, color = c("blue", "blue", "blue", "blue", "blue",
+                                   "blue", "blue", "blue", "blue", "blue","blue",
+                                   "blue", "blue", "red", "blue", "blue","blue",
+                                   "blue", "blue", "blue", "blue", "blue","blue",
+                                   "blue", "blue", "blue", "blue", "blue","blue",
+                                   "blue", "blue", "red", "red", "red", "red","red",
+                                   "red")) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank()) +
+  theme(panel.grid.major = element_line(size = 0.25)) +
+  scale_x_log10(limits = c(0.007, 100), breaks = c(0.12, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 63)) +
+  ylab("") +
+  xlab("\nOdds ratio (log scale)") +
+  theme(axis.text = element_text(face="bold")) +
+    theme(axis.text.y = element_text(size = 4.0)) +
+      theme(axis.text.x = element_text(size = 4.0)) +
+  theme(axis.title.x = element_text(face="bold", size =6.0)) +
+  annotate(geom = "text", y = 2, x = 14.0, label ="Model P < 0.001\nPseudo  R^2 = 0.439\nAUC = 0.852", size = 1.8, hjust = 0) +
+  ggtitle("Binary logistic regression: any health problem") +
+  theme(plot.title = element_text(hjust = 0.5, size = 8)) +
+  theme(aspect.ratio= 1.25)
+
+
+ggsave("FigBRanyHlthProbAll.TIFF")
+```
+
+
+
+## Model with all variables minus health-related variables (Visits, D_Diet and Therapeutic_Food)
+```{r III32xy}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Location + Urban + Education_S + Animal_Career_BINARY 
+         + Income2 + C_Age2 + C_Gender + C_Diet + Size2 + D_Sex + D_Neuter  + D_Diet +
+         + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+### Calculate Nagelkerke R^2
+```{r III33xy}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III34xy}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III35xy}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III36xy}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III37xy}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III38xy}
+car::vif(m)
+```
+
+
+### Create ROCR for training and test data
+```{r ROC63}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC63}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+
+
+# Create Figure of owner-animal metadata model ... Binary logistic regression on Any_Health_Problem
+```{r FigBR-anyHlthu}
+
+boxLabels = c("Location: Other European","Location: North America","Location: Australia/New Zealand/Oceania","Location: Other","Urban","Education_S1_College","Education_S2_Grad","Education_S3_PG_or_PhD","Animal_Career_Yes","Income_Medium","Income_High","C_Age_30-39","C_Age_40-49","C_Age_50-59","C_Age_60+","C_Gender_Male","C_Diet_Omnivore","C_Diet_Pescatarian","C_Diet_Vegan","C_Diet_Vegetarian", "Size_Toy", "Size_Small","Size_Large", "Size_Giant", "D_Sex_Male","Neutered","D_Diet_Raw","D_Diet_Vegan","D_Diet_Vegetarian", "D_Age<6", "D_Age>6")
+# Enter OR and CI data. boxOdds are the odds ratios, 
+# boxCILow is the lower bound of the CI, boxCIHigh is the upper bound.
+df <- data.frame(yAxis = length(boxLabels):1, 
+                 boxOdds = c(1.3422808, 1.2488971, 1.3828247, 1.3572493, 1.2255957,
+                             1.0241138, 0.8592461, 0.8889723, 0.8941394, 0.9605237,
+                             0.8278238, 0.8353352, 0.7147838, 0.5364766, 0.5871275,
+                             0.5869698, 1.047571, 1.7630503, 0.7731706, 0.8913681,
+                             1.0758147, 1.2508023, 1.2032248, 1.9318728, 0.9753783,
+                             1.5222937, 0.6027606, 0.4571828, 0.878756, 1.3177865,21.0752934),
+                 boxCILow = c(0.8284263, 0.6715535, 0.6789393, 0.5543113, 0.9039411,
+                              0.6676173, 0.5562848, 0.5598309, 0.6205389, 0.652007,
+                              0.486197, 0.5282214, 0.4460288, 0.3317614, 0.3516775,
+                              0.31824, 0.720788, 0.9527954, 0.4602446, 0.5371192,
+                              0.3956624, 0.8507913, 0.8660839, 0.9555018, 0.7354082,
+                              1.0477763, 0.4379491, 0.2492088, 0.2723659, 0.7787826, 9.4051426), 
+                 boxCIHigh = c(2.1781756, 2.2981669, 2.7949344, 3.2350201, 1.6605039,
+                               1.5757898, 1.3296797, 1.4124142, 1.2818229, 1.4227233,
+                               1.4056674, 1.3207429, 1.1435143, 0.8644823, 0.9763491,
+                               1.0467661, 1.5181464, 3.2685259, 1.2871549, 1.4633722,
+                               2.739786, 1.835947, 1.6727597, 3.8469315, 1.2939955,
+                               2.2323583, 0.8266873, 0.8321837, 2.7490703, 2.2489866, 48.290088))
+
+
+# Plot
+p <- ggplot(df, aes(x = boxOdds, y = boxLabels)) 
+p + geom_vline(aes(xintercept = 1), size = .25, linetype = "dashed") +
+  geom_errorbarh(aes(xmax = boxCIHigh, xmin = boxCILow), size = .5, height = 
+                   .2, color = "gray50") +
+  geom_point(size = 1.0, color = c("blue", "blue", "blue", "blue", "blue",
+                                   "blue", "blue", "blue", "blue", "blue","blue",
+                                   "blue", "blue", "red", "red", "blue","blue",
+                                   "blue", "blue", "blue", "blue", "blue","blue",
+                                   "blue", "blue", "red", "red", "red","blue",
+                                   "blue", "red")) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank()) +
+  theme(panel.grid.major = element_line(size = 0.25)) +
+  scale_x_log10(limits = c(0.007, 100), breaks = c(0.12, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 63)) +
+  ylab("") +
+  xlab("\nOdds ratio (log scale)") +
+  theme(axis.text = element_text(face="bold")) +
+    theme(axis.text.y = element_text(size = 4.0)) +
+      theme(axis.text.x = element_text(size = 4.0)) +
+  theme(axis.title.x = element_text(face="bold", size =6.0)) +
+  annotate(geom = "text", y = 2, x = 14.0, label ="Model P < 0.001\nPseudo  R^2 = 0.150\nAUC = 0.668", size = 1.8, hjust = 0) +
+  ggtitle("Binary logistic regression: any health problem") +
+  theme(plot.title = element_text(hjust = 0.5, size = 8)) +
+  theme(aspect.ratio= 1.25)
+
+
+ggsave("FigBRanyHlthProbOwAnim.TIFF")
+```
+
+
+
+
+
+
+## Model with all variables minus health-related variables (Visits, D_Diet and Therapeutic_Food) and D_Diet
+```{r III32xyz}
+# fit binary logit model and store results 'm'
+m <- glm(Any_Health_Problem ~  Location + setting + Education_S + Animal_Career_BINARY 
+         + Income2 + C_Age2 + C_Gender + C_Diet + Size2 + D_Sex + D_Neuter + 
+         + bs(D_Age,degree=1,df=2), data = ml_train,family = binomial)
+# view a summary of the model
+summary(m)
+# test model fit
+with(m, null.deviance - deviance)
+with(m, df.null - df.residual)
+with(m, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+BIC(m)
+# Hosmer-Lemeshow Goodness-of-Fit Test
+hltest(m)
+## CIs using profiled log-likelihood
+confint(m, level=0.99)
+## CIs using standard errors
+confint.default(m, level=0.99)
+# Wald test
+wald.test(b = coef(m), Sigma = vcov(m), Terms = 2)
+## odds ratios and 95% CI
+exp(cbind(OR = coef(m), confint(m, level=0.99)))
+```
+
+
+
+### Calculate Nagelkerke R^2
+```{r III33xyz}
+NagelkerkeR2(m)
+```
+
+### check assumptions of model
+#### Cook's distance
+```{r III34xyz}
+plot(m, which = 4, id.n = 3)
+```
+
+#### Extract model results and display data for top 3 values using Cook's distance
+```{r III35xyz}
+model.data <-broom::augment(m) %>% 
+  mutate(index = 1:n()) 
+model.data %>% top_n(3, .cooksd)
+```
+
+#### plot standardised residuals
+```{r III36xyz}
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = Any_Health_Problem), alpha = .5) +
+  theme_bw()
+```
+
+#### Filter potential influential data points with abs(.std.res) > 3:
+```{r III37xyz}
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+```
+
+#### check for multicollinearity
+```{r III38xyz}
+car::vif(m)
+```
+
+
+
+### Create ROCR for training and test data
+```{r ROC64}
+## training data
+pred.mtt = predict(m, type = "response") #repeat risk predictions from model m
+rocr.pred.mtt = ROCR::prediction(pred.mtt, labels = ml_train$Any_Health_Problem) #ROCR prediction object
+roc.perf.mtt = ROCR::performance(rocr.pred.mtt, measure = "tpr", x.measure = "fpr") # #ROCR performance object
+plot(roc.perf.mtt, col = "blue")
+
+
+pred.te.1 = predict(m, newdata = ml_test, type = "response") #.te = "test"
+rocr.pred.te.1 = ROCR::prediction(pred.te.1, labels = ml_test$Any_Health_Problem)
+roc.perf.te.1 = ROCR::performance(rocr.pred.te.1, measure = "tpr", x.measure = "fpr")
+plot(roc.perf.te.1, col = "red", add = T)
+
+abline(a = 0, b = 1, lty = 2) #diagonal for random assignment
+legend("bottomright", legend = c("train","test"),
+col = c("blue","red"), lty = c(2,1), lwd =1.5)
+```
+
+### Report AUC from ROC for training and test data
+```{r AUC64}
+  # Train AUC
+aucTr <- ROCR::performance(rocr.pred.mtt, measure = "auc")
+  aucTr <- aucTr@y.values[[1]]
+  print(aucTr)
+  
+   # Test AUC
+  aucTe <- ROCR::performance(rocr.pred.te.1, measure = "auc")
+  aucTe <- aucTe@y.values[[1]]
+  print(aucTe)
+```
+
+

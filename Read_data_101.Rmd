@@ -1,0 +1,1369 @@
+---
+title: "Read Data 101 - include only primary decision makers"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: default
+---
+
+Data from here:
+https://osf.io/8kzfv?view_only=d05ee82e58dc4c0f84448785ab839bb3
+Original methods and full paper here:
+https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0265662
+
+# Load required packages
+```{r loadpkgs, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE, results='hide'}
+figures <- "figures/"
+library(stringr)
+library(dplyr)
+library(DescTools)
+library(car)
+require(foreign)
+require(ggplot2)
+require(Hmisc)
+require(reshape2)
+library(tidyverse)
+library(broom)
+library(aod)
+library(glmtoolbox)
+library(fmsb)
+library(uwot)
+library(ggthemes)
+library(ggforce)
+library(readxl) #leaves characters as characters
+library(ROCR) # Use ROCR package to plot ROC curve & AUC
+library(pROC)
+library(caret)
+library(xgboost)
+library(smotefamily) # one method of ML data augmentation
+library(rsample)
+library(mltools) # Wrapper allows UMAP calculations
+library(data.table)
+library(heatmaply)
+library(rstatix) # to calculate Kendall correlation with associated p-values.
+library(IHW) # Bioconductor package to calculate BH threshold
+library(dbscan)
+library(corrplot)
+library(showtext)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+library(splines)
+library(cluster)
+library(factoextra)
+library(clusterSim)
+library(RColorBrewer)
+```
+
+# Open Excel file
+```{r read_data_1, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+#Save the data so can run subsequent analysis ad lib
+SAVE=TRUE
+
+#quicker version readxl
+ml <- read_excel('Canine health results.xlsx', sheet = "All")
+cols <- c("Col_a")
+for (col in 2:ncol(ml)){
+  if (col <= 26){
+    cols <- cbind(cols,paste0("Col_",letters[col]))
+  } else if (col <= 52) {
+    cols <- cbind(cols,paste0("Col_a",letters[col-26]))
+  } else {
+    cols <- cbind(cols,paste0("Col_b",letters[col-52]))
+  }
+}
+names(ml) <- cols
+
+```
+
+Rename variables
+```{r RENAME_MATCH_2, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+ml <- dplyr::rename(ml, unique.resp.number = Col_a)
+ml <- dplyr::rename(ml, Location = Col_c)
+ml <- dplyr::rename(ml, setting = Col_e)
+ml <- dplyr::rename(ml, Education = Col_g)
+ml <- dplyr::rename(ml, Animal_Career = Col_h)
+ml <- dplyr::rename(ml, Income = Col_i)
+ml <- dplyr::rename(ml, C_Age = Col_j)
+ml <- dplyr::rename(ml, C_Gender = Col_k)
+ml <- dplyr::rename(ml, C_Diet = Col_l)
+ml <- dplyr::rename(ml, Size = Col_o)
+ml <- dplyr::rename(ml, D_Age = Col_p)
+ml <- dplyr::rename(ml, D_Gender = Col_r)
+ml <- dplyr::rename(ml, Therapeutic_Food = Col_s)
+ml <- dplyr::rename(ml, Visits = Col_t)
+ml <- dplyr::rename(ml, Vet_Health = Col_u)
+ml <- dplyr::rename(ml, Meds = Col_ag)
+ml <- dplyr::rename(ml, Health = Col_ah)
+ml <- dplyr::rename(ml, D_Diet = Col_ai)
+ml <- dplyr::rename(ml, Decision_Maker = Col_at)
+head(ml)
+```
+
+# Start by creating separate Sex and neuter status variables
+```{r split_gender_Neuter, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$D_Sex <- rep("Male",nrow(ml))
+for (i in 1:nrow(ml)){
+    if (grepl('Male', ml$D_Gender[i], fixed = TRUE)){
+       ml$D_Sex[i] <- "Male"
+       } else{
+       ml$D_Sex[i] <- "Female"
+       }
+}
+
+#Checks and Balances
+dplyr::count(ml, D_Sex)
+
+ml$D_Neuter <- rep("BLANK",nrow(ml))
+for (i in 1:nrow(ml)){
+    if (grepl('intact', ml$D_Gender[i], fixed = TRUE)){
+       ml$D_Neuter[i] <- "Intact"
+       }
+    else {
+       ml$D_Neuter[i] <- "Neutered"
+    }
+}
+dplyr::count(ml, D_Neuter)
+```
+
+# check D_Age
+```{r check_D_Age, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, D_Age)
+```
+
+# Dog Age remove <1 years and unsure, then change to numeric
+```{r tidy_D_Age, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml <-subset(ml, D_Age != "<1" & D_Age != "Unsure")
+ml$D_Age<-as.numeric(ml$D_Age)
+dplyr::count(ml, D_Age)
+```
+
+# Initial Visualisation Excluding Health indicators with UMAP
+```{r PrepForUMAP, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE,fig.showtext=TRUE}
+uml<-ml
+
+#Temporarily create the Owner Diet data labels for use later.
+
+#Numeric -Euclidean
+D_Age <- uml$D_Age
+C_Age <- factor(uml$C_Age, 
+                ordered=TRUE,levels=c("18-19",
+                "20–29", "30–39", "40–49", 
+                "50–59", "60–69",">70"))
+
+#Ordered FALSE since TOY is not strictly smaller than Small, but different.
+Size <- factor(uml$Size, ordered = FALSE, levels=c(
+        "Toy (≤ 4.1 kg or ≤ 9 lb)",
+"Small (4.5–10.9 kg or 10–24 lb)",
+"Medium (11.4–22.3 kg or 25–49 lb)",
+"Large (22.7–40.5 kg or 50–89 lb)",
+ "Giant (> 40.9 kg or > 90 lb)") )
+
+uml$Education <- factor(uml$Education, 
+                   ordered=TRUE,
+                   levels=c("Did not complete high school" ,
+                      "High school or equivalent",
+                      "College or University award lower than undergraduate degree",
+                      "University undergraduate degree",
+                      "University postgraduate degree lower than doctoral degree e.g. masters",
+                      "Doctoral degree"))
+                      
+C_DietLabs<-uml$C_Diet
+D_DietLabs<-uml$D_Diet
+Edu_Labs <- uml$Education
+
+Education <- uml$Education
+#Not truely ordered because some "prefer not to say"
+Income <- as.factor(uml$Income)
+
+#Factors even if binary - use Hamming
+D_Sex <- as.factor(uml$D_Sex)
+C_Gender <- as.factor(uml$C_Gender)
+Neuter_Status <- as.factor(uml$D_Neuter)
+Decision_Maker <- as.factor(uml$Decision_Maker)
+setting <- as.factor(uml$setting)
+Animal_Career <- as.factor(uml$Animal_Career)
+Location <- as.factor(uml$Location)  
+D_Diet <- as.factor(uml$D_Diet) 
+C_Diet <- as.factor(uml$C_Diet) 
+
+#Reforming so we can use the explicitly set data types...
+#Numeric Euclidean
+#Ordered Manhattan
+#Factor Hamming
+#Factor Hamming
+#Factor Hamming
+Udata <- data.frame(
+  cbind(D_Age, 
+        C_Age, Education,
+        Size,  
+        Income, Neuter_Status,  D_Sex, C_Gender, 
+        Animal_Career, C_Diet, D_Diet,
+        setting, Decision_Maker, Location),
+  stringsAsFactors = TRUE) #Should be no strings as already factors
+#Labels
+
+#if using uwot
+targets <- c(rep("euclidean",1),
+             rep("manhattan", 2),
+             rep("hamming", 11) )
+
+Udata$C_DietLabs <- C_DietLabs
+uKeeper <- complete.cases(Udata)
+Udata <- Udata[uKeeper,]
+
+CLabs <- Udata$C_DietLabs
+Edu_Labs <- Edu_Labs[uKeeper]
+#For other applications:
+write.csv(Udata,"Udata.csv")
+# Dont include the labels themselves in the UMAP
+Udata <- dplyr::select(Udata,-C_DietLabs)
+
+# nice-ify labels
+CLabs <- stringr::str_replace(CLabs,"Vegetarian \\(consuming plants, eggs and milk\\)","Vegetarian")
+CLabs <- stringr::str_replace(CLabs,"Omnivore \\(i.e. eat meat\\)","Omnivore")
+CLabs <- stringr::str_replace(CLabs,"Omnivore reducing animal product consumption","Omnivore \\(Reducing\\)")
+CLabs <- stringr::str_replace(CLabs,"Vegan \\(consuming no animal products\\)" ,"Vegan")
+CLabs <- stringr::str_replace(CLabs,"Pescatarian \\(including fish but no other meats\\)","Pescatarian")
+
+```
+```{r}
+#Set up for doggie   
+Labs <- D_DietLabs[uKeeper] #remember we complete cased above!
+
+# nice-ify labels
+Labs <- stringr::str_replace(Labs,"Meat-based – conventional","Meat-based")
+Labs <- stringr::str_replace(Labs,"Vegan \\(consuming no animal products\\)","Vegan")
+Labs <- stringr::str_replace(Labs,"Meat-based – lab-grown","Lab-grown")
+Labs <- stringr::str_replace(Labs,"Meat-based – raw","Raw food")
+Labs <- stringr::str_replace(Labs,"Vegetarian \\(including eggs or milk, but not meat\\)","Vegetarian")
+
+```
+
+#Perform UMAP run
+```{r drawoneumap}
+# Use UWOT library rather than UMAP since has built in categorical support
+# hyperparameters, largely defaults
+
+  n_epochs = 50000
+  n_components = 2
+  n_n = 20
+  learning_rate = .01
+  scale = "maxabs"
+  spread = 1
+  min_dist = 0.001
+  set_op_mix_ratio = 1
+  local_con = 1
+  bandwidth = 1
+  repulsion_strength = 1
+  neg = 5
+  n_trees = 50
+  target_weight = 0.5 
+  init="normlaplacian"
+
+  set.seed(666)
+  um <- uwot::umap(Udata, target_metric=targets,
+                   spread=spread, n_neighbors = n_n,
+                   min_dist = min_dist, negative_sample_rate = neg,
+                   n_epochs = n_epochs, local_connectivity = local_con, 
+                   n_trees=n_trees, scale=scale
+  )   
+ df=as.data.frame(cbind(um[,1],um[,2]))
+  names(df) <- c("x","y") 
+ ggplot(df, aes(x, y)) +
+    geom_point(aes(fill = Labs),alpha=0.8,shape=21,size=2, stroke=0.2) + labs(fill="Dog Diet")+
+    xlab("UMAP X co-ordinates")+ylab("UMAP Y co-ordinates")+
+    #geom_segment(aes(y=bottom,yend=top,x=-Inf,xend=-Inf))+
+    #geom_segment(aes(y=-Inf,yend=-Inf,x=left,xend=right))+
+    #scale_y_continuous(breaks=seq(bottom,top,2))+
+    #scale_x_continuous(breaks=seq(left,r-ight,2))+
+    geom_rangeframe() + theme_tufte(base_family = "Gill Sans") 
+    fname=paste0("umaps/","i", i,"min_dist",min_dist,
+               "_spread" ,spread,"_nn" ,n_n, "_lcon" ,
+               local_con,"_neg",neg,"_epochs",n_epochs, "_trees", n_trees,"_", scale,".png")
+    #Test Umap plot including hyperparameters
+    #ggsave(fname)
+```
+#Perform density clustering analysis
+##And Dog clustering metrics
+```{r clustering, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+suppressWarnings(file.remove("dog_diet_clusters.csv"))
+set.seed(666)
+db <- dbscan(um, eps=0.7, minPts = 50) #eps=1 minPts=5 db <- dbscan(um, eps=0.8, minPts = 25) dbscan(um, eps=0.86, minPts = 46)
+print(db)
+combi <- cbind(df,db$cluster,Labs)
+names(combi) <- c("x","y","cluster","Diet")
+print(paste("total observations = ", nrow(combi) ) )
+output <- dplyr::count(combi, Diet, name="All Data")
+print(output)
+write.table(output,
+            "dog_diet_clusters.csv",
+            sep=",",
+            row.names=FALSE,
+            append = TRUE)
+centeroids <- data.frame(mx=as.numeric(), my=as.numeric())
+for (CLUSTER in seq(0, max(db$cluster)) ){
+  print(paste("cluster",CLUSTER) )
+  this_clust <- subset(combi,cluster==CLUSTER)
+  print(paste("total observations in cluster", CLUSTER," = ", nrow(this_clust) ))
+  output <- dplyr::count(this_clust, Diet, name=paste("Cluster", CLUSTER))
+  print(output)
+  write.table(output,
+            "dog_diet_clusters.csv",
+            sep=",",
+            row.names=FALSE,
+            append = TRUE)
+
+  if (CLUSTER >0){
+    mx <- mean(this_clust$x)
+    my <- mean(this_clust$y)
+    lc <- data.frame(mx=mx,my=my)
+    centeroids <- rbind(centeroids,lc)
+    print(paste("Cluster", 
+                CLUSTER, 
+                "centeroid is",
+                round(mx,2),round(my,2)))
+  }
+}
+```
+
+##Owner Diet clustering metrics
+```{r ownercluster data}
+suppressWarnings(file.remove("owner_diet_clusters.csv"))
+combi <- cbind(df,db$cluster,CLabs)
+names(combi) <- c("x","y","cluster","C_Diet")
+print(paste("total observations = ", nrow(combi) ) )
+output <- dplyr::count(combi, C_Diet, name="All Data")
+
+print(output)
+write.table(output,
+            "owner_diet_clusters.csv",
+            sep=",",
+            row.names=FALSE,
+            append = TRUE)
+
+for (CLUSTER in seq(0, max(db$cluster)) ){
+  print(paste("cluster",CLUSTER) )
+  this_clust <- subset(combi,cluster==CLUSTER)
+  print(paste("total observations in cluster", CLUSTER," = ", nrow(this_clust) ))
+  output <- dplyr::count(this_clust, C_Diet, name=paste("Cluster", CLUSTER))
+  print(output)
+  write.table(output,
+            "owner_diet_clusters.csv",
+            sep=",",
+            row.names=TRUE,
+            append = TRUE)
+}
+
+
+```
+
+
+##Owner Education clustering metrics
+```{r Educluster data}
+suppressWarnings(file.remove("owner_edu_clusters.csv"))
+combi <- cbind(df,db$cluster,Edu_Labs)
+names(combi) <- c("x","y","cluster","Education")
+print(paste("total observations = ", nrow(combi) ) )
+output <- dplyr::count(combi, Education, name="All Data")
+
+print(output)
+write.table(output,
+            "owner_edu_clusters.csv",
+            sep=",",
+            row.names=FALSE,
+            append = TRUE)
+
+for (CLUSTER in seq(0, max(db$cluster)) ){
+  print(paste("cluster",CLUSTER) )
+  this_clust <- subset(combi,cluster==CLUSTER)
+  print(paste("total observations in cluster", CLUSTER," = ", nrow(this_clust) ))
+  output <- dplyr::count(this_clust, Education, name=paste("Cluster", CLUSTER))
+  print(output)
+  
+  write.table(output,
+            "owner_edu_clusters.csv",
+            sep=",",
+            row.names=TRUE,
+            append = TRUE)
+}
+
+
+```
+
+
+#Pull out the centeroids
+```{r centeroids}
+p <- ggplot(df, aes(x, y)) +
+    geom_point(aes(fill = Labs),alpha=0.8,shape=21,size=2, stroke=0.2) +
+  labs(fill="Dog Diet")+
+    xlab("UMAP X co-ordinates")+ylab("UMAP Y co-ordinates")+
+    #geom_segment(aes(y=bottom,yend=top,x=-Inf,xend=-Inf))+
+    #geom_segment(aes(y=-Inf,yend=-Inf,x=left,xend=right))+
+    #scale_y_continuous(breaks=seq(bottom,top,2))+
+    #scale_x_continuous(breaks=seq(left,r-ight,2))+
+    geom_rangeframe() + theme_tufte(base_family = "Gill Sans") +
+  geom_mark_circle(data=centeroids,
+                     aes(x=mx, y=my, group=rownames(centeroids)), 
+                   fill="white", 
+                   alpha=0.7,
+                   color="black",
+                     con.type = "none",
+                     label.fill = "white",
+                     show.legend = FALSE,
+                     inherit.aes = FALSE) +
+  geom_text(data = centeroids, aes(mx, my, label = rownames(centeroids)), size = 10, color = "black")
+    
+    fname=paste0("umaps/","i", i,"min_dist",min_dist,
+               "_spread" ,spread,"_nn" ,n_n, "_lcon" ,
+               local_con,"_neg",neg,"_epochs",n_epochs, "_trees", n_trees,"_", scale,".png")
+    print(p)
+    #ggsave(fname)
+```
+
+#Calculate silhoutte and cluster metric
+```{r silhoutte, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE,fig.showtext=TRUE}
+set.seed(1234)
+
+sil <- silhouette(db$cluster, dist(dplyr::select(combi,x,y)))
+sil <- fviz_silhouette(sil)
+
+
+sil_df <- sil$data
+output <- data.frame(Cluster=as.numeric(), 
+                     Score=as.numeric(),
+                     mx=as.numeric(),
+                     my=as.numeric()
+                     )
+mx <- 0
+snx <- 0
+for (cluster in unique(sil_df$cluster)){
+  c <- as.character(cluster)
+  Score <- mean(subset(sil_df,cluster==c)$sil_width)
+  my <- Score
+  #halfway long the cluster
+  nx <- nrow(subset(sil_df,cluster==c))
+  mx <- snx + nx/2
+  snx <- snx + nx
+  
+  print(paste(cluster,round(Score,3), nx))
+  local <- data.frame(
+    Cluster=as.numeric(as.character(cluster)),
+    Score=round(Score,3),
+    mx=mx, my=my)
+  output <- rbind(output,local)
+}
+head(output)
+write.csv(output, "sils.csv")
+output <- subset(output, Cluster >0)
+p <-  sil + geom_mark_circle(data=output,
+                  aes(x=mx, y=my, group=rownames(output)), 
+                  fill="white", 
+                  alpha=0.7,
+                   color="black",
+                     con.type = "none",
+                     label.fill = "white",
+                     show.legend = FALSE,
+                     inherit.aes = FALSE) +
+  geom_text(data = output, 
+            aes(mx, my, label = round(Score,2)), 
+            size = 3, color = "black")
+print(p)
+ggsave(paste0(figures,"fviz_silhouette.tiff"),width = 5, height = 4, dpi = 300, compression = "lzw")
+
+```
+
+#Davies-Bouldin
+```{r cluster_metric, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE,fig.showtext=TRUE}
+result <- index.DB(dplyr::select(combi,x,y), combi$cluster, centrotypes="centroids")
+
+# print the Davies-Bouldin index
+print(paste("Davies-Bouldin index is ", round(result$DB,4)) )
+```
+
+# UMAP by dog diet
+```{r umap_dog,echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE,fig.showtext=TRUE}
+Labs <- D_DietLabs[uKeeper] #remember we complete cased above!
+
+# nice-ify labels
+Labs <- stringr::str_replace(Labs,"Meat-based – conventional","Meat-based")
+Labs <- stringr::str_replace(Labs,"Vegan \\(consuming no animal products\\)","Vegan")
+Labs <- stringr::str_replace(Labs,"Meat-based – lab-grown","Lab-grown")
+Labs <- stringr::str_replace(Labs,"Meat-based – raw","Raw food")
+Labs <- stringr::str_replace(Labs,"Vegetarian \\(including eggs or milk, but not meat\\)","Vegetarian")
+
+top=8
+bottom=-6
+left=-6
+right=10
+ggplot(df, aes(x, y)) +
+  geom_point(aes(fill = Labs),
+             alpha=0.8,shape=21,size=3, stroke=0.2) +
+  labs(fill="Dog Diet")+
+  xlab("UMAP X co-ordinates")+ylab("UMAP Y co-ordinates")+
+  geom_segment(aes(y=bottom,yend=top,x=-Inf,xend=-Inf))+
+  geom_segment(aes(y=-Inf,yend=-Inf,x=left,xend=right))+
+  scale_fill_manual(values = rainbow(9)) +
+  scale_y_continuous(breaks=seq(bottom,top,2))+
+  scale_x_continuous(breaks=seq(left,right,2))+
+  geom_rangeframe() + 
+  theme_tufte(base_family = "Gill Sans", 
+              base_size=18) +
+  theme(legend.title = element_text(size = 18),
+              legend.text = element_text(size = 12))+
+  geom_rangeframe() + 
+  geom_mark_circle(data=centeroids,
+                     aes(x=mx, y=my, group=rownames(centeroids)), 
+                   fill="white", 
+                   alpha=0.3,
+                   color="black",
+                     con.type = "none",
+                     label.fill = "white",
+                     show.legend = FALSE,
+                     inherit.aes = FALSE) +
+  geom_text(data = centeroids, aes(mx, my, label = rownames(centeroids)), size = 8, color = "black")
+ggsave(paste0(figures,"UMAP_Clear_Dog.TIFF"), compression="lzw")
+
+```
+
+# Initial Visualisation Excluding Health indicators with UMAP by extra metadata, for SI
+```{r plot_other_UMAPS,echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE,fig.showtext=TRUE}
+cropbraket <- function(mystring){
+    newstring <- unlist(str_split(mystring, " \\("))[1]
+  }
+
+plotum <- function(labels,lcat,df){
+  #number of legend rows
+  lrow=2
+  if (length(unique(labels))>3){lrow=3}
+  if (length(unique(labels))>6){lrow=4}
+  
+  ldf <-cbind(df,labels)
+  ldf <- ldf[complete.cases(ldf),]
+  ldf <- ldf[order(ldf[,"labels"]),]
+  labels<-ldf$labels
+
+  #Pretty the legend key
+  labels <- str_replace(labels,"Prefer not to answer","Not given")
+  if (lcat=="D_Age") lcat="Dog Age"
+  if (lcat=="C_Age") lcat="Owner Age"
+  if (lcat=="Neuter_Status") lcat="Neuter Status"
+  if (lcat=="D_Sex") lcat="Dog Sex"
+  if (lcat=="C_Gender") lcat="Owner Gender"
+  if (lcat=="C_Diet") {
+      lcat="Owner Diet"
+      # nice-ify labels
+      labels <- stringr::str_replace(labels,
+                                   "Vegetarian \\(consuming plants, eggs and milk\\)","Vegetarian")
+      labels <- stringr::str_replace(labels,
+                                   "Omnivore \\(i.e. eat meat\\)","Omnivore")
+      labels <- stringr::str_replace(labels,
+                                   "Omnivore reducing animal product consumption","Reduced Meat")
+      labels <- stringr::str_replace(labels,
+                                   "Vegan \\(consuming no animal products\\)" ,"Vegan")
+      labels <- stringr::str_replace(labels,
+                                   "Pescatarian \\(including fish but no other meats\\)","Pescatarian")
+      order <- as.numeric(labels == "Vegan")
+      ldf$order <- order
+      ldf <- ldf[order(ldf[,"order"]),]
+      
+      #Try and get the colours to match the Dog equiv
+      tempcols <- scales::hue_pal()(n=9)
+      colours <- tempcols[4:9]
+  }
+  
+  if (lcat=="D_Diet") return (NULL)
+  
+  if (lcat == "Animal_Career") {
+    lcat = "Animal Career"
+    labels <- str_replace(labels,
+                            "None of the above","None")
+    labels <- str_replace(labels,
+                            "Pet industry worker","Pet industry")
+    labels <- str_replace(labels,
+                            "Animal trainer","Trainer")
+    labels <- str_replace(labels,
+                            "Veterinary technician or nurse","Vet Tech/Nurse")
+    labels <- str_replace(labels,
+                            "Animal breeder","Breeder")
+  }
+  
+  if (lcat=="Size") labels <- sapply(labels,cropbraket)
+  
+  if (lcat=="Decision_Maker"){
+      lcat="Decision Maker"
+      labels <- str_replace(labels,
+                            "Primary decision-maker","Primary")
+      labels <- str_replace(labels,
+                            "Play some lesser role","Some Role")
+      labels <- str_replace(labels,
+                            "Play no role","No Role")
+  }
+  
+  if (lcat=="Location"){
+      labels <- str_replace(labels,
+                            "North America","N. America")
+      labels <- str_replace(labels,
+                            "Other European","Other Euro.")
+      labels <- str_replace(labels,
+                            "Australia/New Zealand/Oceania","Oceania")
+  }
+
+    if (lcat=="setting"){
+      lcat="Setting"
+      labels <- str_replace(labels,
+                            "Equally urban and rural","Equal U & R")
+  }
+  
+  if (lcat=="Education"){
+      labels <- str_replace(labels,
+                            "Did not complete high school","0_Basic")
+      labels <- str_replace(labels,"High school or equivalent",
+                            "1_HighSchool")
+      labels <- str_replace(labels,
+                            "College or University award lower than undergraduate degree",
+                            "2_College")
+      labels <- str_replace(labels,
+                            "University undergraduate degree", "3_Grad")
+      labels <- str_replace(labels,
+                            "University postgraduate degree lower than doctoral degree e.g. masters", "4_PG")
+      labels <- str_replace(labels,
+                            "Doctoral degree", "5_PhD")
+  }
+  
+    labels <- as.factor(str_trunc(labels,12,"right",""))
+    if (lcat == "Dog Age") labels <- as.numeric(labels)
+    #ldf <- dplyr::select(ldf,-labels)
+  
+  #Put the labels back in!
+  ldf$labels<-labels
+
+  #remove this version to remove confusion
+  rm(labels)
+  
+  top=8
+  bottom=-6
+  left=-6
+  right=10
+ p <- ggplot()
+ if (lcat == "Dog Diet") {
+    p <- p + 
+      geom_point(
+        data = subset(ldf,!(labels %in% c("Vegan")) ),
+               aes(x = x, y = y, fill = labels), 
+               alpha = 0.8, shape = 21, size = 3, stroke = 0.2)+
+      geom_point(data = subset(ldf, labels == "Vegan"),
+              aes(x = x, y = y, fill = labels), alpha = 0.8, shape = 21, size = 3, stroke = 0.2)
+ } else if (lcat == "Decision Maker") {
+   p <- p + geom_point(
+        data = subset(ldf,!(labels %in% c("No Role", "Some Role")) ),
+               aes(x = x, y = y, fill = labels), 
+               alpha = 0.8, shape = 21, size = 3, stroke = 0.2)+
+      geom_point(data = subset(ldf, labels == "No Role"),
+              aes(x = x, y = y, fill = labels), 
+              alpha = 0.8, shape = 21, size = 3, stroke = 0.2)+
+     geom_point(data = subset(ldf, labels == "Some Role"),
+              aes(x = x, y = y, fill = labels), 
+              alpha = 0.8, shape = 21, size = 3, stroke = 0.2)
+ } else {
+    p <- p + 
+      geom_point(
+        data = ldf,
+               aes(x = x, y = y, fill = labels), 
+               alpha = 0.8, shape = 21, size = 3, stroke = 0.2
+        )
+    }
+ 
+  p <- p + labs(fill=lcat)+
+    xlab("UMAP X co-ordinates")+ylab("UMAP Y co-ordinates")
+    if (lcat=="Dog Age"){
+      p <- p +scale_fill_gradientn(colors = rainbow(8)) 
+    } else if (lcat == "Owner Diet"){
+      p <- p +scale_fill_manual(values = colours,
+                                   limits = unique(ldf$labels))
+    }
+  p <- p + geom_segment(aes(y=bottom,yend=top,x=-Inf,xend=-Inf))+
+    geom_segment(aes(y=-Inf,yend=-Inf,x=left,xend=right))+
+    scale_y_continuous(breaks=seq(bottom,top,2))+
+    scale_x_continuous(breaks=seq(left,right,2))+
+    geom_rangeframe() + 
+    theme_tufte(base_family = "Gill Sans", base_size=18) +
+    theme(legend.title = element_text(size = 18),
+              legend.text = element_text(size = 12))+
+    geom_mark_circle(data=centeroids,
+                       aes(x=mx, y=my, 
+                           group=rownames(centeroids)),
+                       fill="white", 
+                       alpha=0.3,
+                       color="black",
+                       con.type = "none",
+                       label.fill = "white",
+                       show.legend = FALSE,
+                       inherit.aes = FALSE) +
+    geom_text(data = centeroids, 
+              aes(mx, my, 
+                  label = rownames(centeroids)), 
+              size = 8, color = "black")
+
+  print(p)
+  ggsave(paste0(figures,"UMAP_",lcat,".TIFF"), compression="lzw")
+  return (ldf)
+  }
+
+for (label in names(Udata)){
+  print(paste("starting",label))
+  
+  if (label=="Neuter_Status"){
+    plotum(uml[["D_Neuter"]][uKeeper],label,df)
+  } else{
+      DF <- plotum(uml[[label]][uKeeper],label,df)
+  }
+
+  print(paste("completed",label) )
+}
+```
+
+
+# Create ml data frame
+```{r select_just_needed, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml <- dplyr::select(ml,c(unique.resp.number,
+Location,
+setting,
+Education,
+Animal_Career,
+Income,
+C_Age,
+C_Gender,
+C_Diet,
+Size,
+D_Age,
+D_Gender,
+D_Sex,
+D_Neuter, 
+Therapeutic_Food,
+Visits,
+Vet_Health,
+Meds,
+Health,
+D_Diet,
+Decision_Maker))
+
+#check columns
+head(ml)
+```
+
+# Categorise Fog Age into quintiles
+```{r D_Age_quintiles, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml <-subset(ml, D_Age != "NA")
+ml$D_Age_quant <- cut(ml$D_Age , breaks=quantile(ml$D_Age, probs = seq(0, 1, 0.2)),na.rm = TRUE, include.lowest= TRUE)
+dplyr::count(ml, D_Age_quant)
+```
+
+
+# Check Sex
+```{r sex, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$D_Sex <- as.factor(ml$D_Sex)
+#Checks and Balances
+dplyr::count(ml, D_Sex)
+```
+
+# Check Neuter
+```{r neuter, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$D_Neuter <- as.factor(ml$D_Neuter)
+#Checks and Balances
+dplyr::count(ml, D_Neuter)
+```
+
+# Check Location
+```{r location, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, Location)
+```
+
+# combine smaller groups into logical categories
+```{r locations, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+for (i in 1:nrow(ml)){
+  if (grepl('UK', ml$Location[i], fixed = TRUE)){
+    ml$Location[i] <- "UK"
+  } else if (grepl('Other European', ml$Location[i], fixed = TRUE)){
+    ml$Location[i] <- "Other European"
+  } else if (grepl('North America', ml$Location[i], fixed = TRUE)){
+    ml$Location[i] <- "North America"
+  } else if (grepl('Australia/New Zealand/Oceania', ml$Location[i], fixed = TRUE)){
+    ml$Location[i] <- "Australia/New Zealand/Oceania"
+  } else {
+    ml$Location[i] <- "Other"
+  }
+}
+ml$Location <- factor(ml$Location, levels = c("UK", "Other European", "North America", "Australia/New Zealand/Oceania", "Other"))
+dplyr::count(ml, Location)
+```
+
+# create Location_Europe binary
+```{r locationEur, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+# Create a binary Loaction_Europe variable
+ml$Location_Europe <- ml$Location
+ml$Location_Europe <- as.character(ml$Location_Europe)
+for (i in 1:nrow(ml)){
+  if (grepl('Other European', ml$Location_Europe[i], fixed = TRUE)){
+    ml$Location_Europe[i] <- "Yes"
+  } else {
+    ml$Location_Europe[i] <- "No"
+  }
+}
+dplyr::count(ml, Location_Europe)
+```
+
+# check setting
+```{r settingcheck, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, setting)
+```
+
+# Not much point including data where setting is "other"
+```{r groupraresettings, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml <- subset(ml, setting != "Other" | setting != NA)
+ml$setting <- as.factor(ml$setting)
+dplyr::count(ml, setting)
+```
+
+# Reorder SETTING and check
+```{r reordersettings, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+# reorder categories so Urban is REF
+ml$setting <- factor(ml$setting, levels=c('Urban', 'Rural', 'Equally urban and rural'))
+dplyr::count(ml, setting)
+```
+
+# create binary for URBAN
+```{r binary_urban, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+# Create a binary URBAN variable
+ml$Urban <- ml$setting
+ml$Urban <- as.character(ml$Urban)
+for (i in 1:nrow(ml)){
+  if (grepl('Urban', ml$Urban[i], fixed = TRUE)){
+    ml$Urban[i] <- "Yes"
+  } else {
+    ml$Urban[i] <- "No"
+  }
+}
+dplyr::count(ml, Urban)
+```
+
+# Check Education
+```{r educheck, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, Education)
+```
+
+# Simplify education and order categories
+```{r simpedu, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+Qualifications=c('0_Basic','1_HighSchool','2_College','3_Grad','4_PG', '5_PhD')
+ml$Education <- str_replace(ml$Education,"Did not complete high school","0_Basic")
+ml$Education <- str_replace(ml$Education,"High school or equivalent","1_HighSchool")
+ml$Education <- str_replace(ml$Education,"College or University award lower than undergraduate degree", "2_College")
+ml$Education <- str_replace(ml$Education,"University undergraduate degree", "3_Grad")
+ml$Education <- str_replace(ml$Education,"University postgraduate degree lower than doctoral degree e.g. masters", "4_PG")
+ml$Education <- str_replace(ml$Education,"Doctoral degree", "5_PhD")
+ml$Education <- ordered(ml$Education)
+dplyr::count(ml, Education)
+```
+
+#Simplify education further as small group sizes
+```{r simpedu2, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+Qualifications_S=c('0_Basic_or_HighSchool','1_College','2_Grad','3_PG_or_PhD')
+ml$Education_S <- ml$Education
+ml$Education_S <- str_replace(ml$Education_S,"0_Basic","0_Basic_or_HighSchool")
+ml$Education_S <- str_replace(ml$Education_S,"1_HighSchool","0_Basic_or_HighSchool")
+ml$Education_S <- str_replace(ml$Education_S,"2_College", "1_College")
+ml$Education_S <- str_replace(ml$Education_S,"3_Grad", "2_Grad")
+ml$Education_S <- str_replace(ml$Education_S,"4_PG", "3_PG_or_PhD")
+ml$Education_S <- str_replace(ml$Education_S,"5_PhD", "3_PG_or_PhD")
+dplyr::count(ml, Education_S)
+```
+
+# Try non-ordered categories for Education_S
+```{r non-ordered_group_education, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+ml$Education_S2 <- factor(ml$Education_S, ordered=FALSE)
+dplyr::count(ml, Education_S2)
+```
+
+# check Animal_Career variable
+```{r animalcareercheck, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, Animal_Career)
+```
+
+# create animal career variable where vet combined
+```{r sort animalcareer, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+ml$Animal_Career2 <- ml$Animal_Career
+for (i in 1:nrow(ml)){
+  if (grepl('Vet', ml$Animal_Career2[i], fixed = TRUE)){
+    ml$Animal_Career2[i] <- "Vet professional"
+  } else if (grepl('Animal breeder', ml$Animal_Career2[i], fixed = TRUE)){
+    ml$Animal_Career2[i] <- "breeder/trainer"
+  } else if (grepl('Animal trainer', ml$Animal_Career2[i], fixed = TRUE)){
+    ml$Animal_Career2[i] <- "breeder/trainer"
+  } else if (grepl('Pet industry worker', ml$Animal_Career2[i], fixed = TRUE)){
+    ml$Animal_Career2[i] <- "Pet industry worker"
+  } else {
+    ml$Animal_Career2[i] <- "None of the above"
+  }
+}
+#reorder categories so None of the above is REF
+ml$Animal_Career2 <- factor(ml$Animal_Career2, levels=c('None of the above', 'Vet professional', 'breeder/trainer', 'Pet industry worker'))
+dplyr::count(ml, Animal_Career2)
+```
+
+# create binary variable for animal career as ensures better balance
+```{r binaryanimalcareer, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$Animal_Career_BINARY <- ml$Animal_Career
+
+for (i in 1:nrow(ml)){
+  if (grepl('None of the above', ml$Animal_Career_BINARY[i], fixed = TRUE)){
+    ml$Animal_Career_BINARY[i] <- "No"
+  } else {
+    ml$Animal_Career_BINARY[i] <- "Yes"
+  }
+}
+dplyr::count(ml, Animal_Career_BINARY)
+```
+
+# Check Income
+```{r checkincome, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, Income) 
+```
+
+# Two choice with Income; treat as factor or drop "prefer not to say" and treat as ordinal.
+```{r orderincome, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml <- subset(ml, Income != "Prefer not to answer" | Income != NA)
+ml$Income <-ordered(ml$Income,levels=c("Low","Medium","High"))
+dplyr::count(ml, Income)
+
+```
+
+# Try non-ordered categories for Income
+```{r non-ordered_group_income, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+ml$Income2 <- factor(ml$Income, ordered=FALSE)
+dplyr::count(ml, Income2)
+```
+
+# Check C_Age
+```{r check_C_ages, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, C_Age)
+```
+
+# combine smallest categories and reorder
+```{r group_age, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$C_Age <- str_replace(ml$C_Age,"18-19","<30")
+ml$C_Age <- str_replace(ml$C_Age,"20–29","<30")
+ml$C_Age <- str_replace(ml$C_Age,">70","60<")
+ml$C_Age <- str_replace(ml$C_Age,"60–69","60<")
+ml$C_Age<-ordered(ml$C_Age)
+#Check right order
+ml$C_Age[nrow(ml)]
+dplyr::count(ml, C_Age)
+```
+
+# Try non-ordered categories for c_Age
+```{r non-ordered_group_age, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+ml$C_Age2 <- factor(ml$C_Age, ordered=FALSE)
+dplyr::count(ml, C_Age2)
+```
+
+# Check C_Gender
+```{r check C-Gender, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, C_Gender) 
+```
+
+# Given small numbers in some categories, create male/female subset for C_Gender
+```{r subset C_Gender, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml <-subset(ml, C_Gender == "Male" | C_Gender =="Female")
+ml$C_Gender <- as.factor(ml$C_Gender)
+dplyr::count(ml, C_Gender) 
+ 
+```
+
+# Check C_Diet
+```{r C_Diet, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, C_Diet) 
+```
+
+# Not much point including other category as small numbers
+```{r remove_smallC_Diet_groups, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+ml <- subset(ml, C_Diet != "Other" | C_Diet != NA)
+dplyr::count(ml, C_Diet) 
+```
+
+# create binary C_Vegan variable
+```{r C_Vegan_binary, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+ml$C_Diet_Vegan <- ml$C_Diet
+for (i in 1:nrow(ml)){
+  if (grepl('Vegan', ml$C_Diet_Vegan[i], fixed = TRUE)){
+    ml$C_Diet_Vegan[i] <- "Yes"
+  } else {
+    ml$C_Diet_Vegan[i] <- "No"
+  }
+}
+dplyr::count(ml, C_Diet_Vegan)
+```
+
+# create binary C_Vegan_Veggie variable
+```{r C_Vegan_Veggiebinary, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+ml$C_Diet_Vegan_Veggie <- ml$C_Diet
+for (i in 1:nrow(ml)){
+  if (grepl('Veg', ml$C_Diet_Vegan_Veggie[i], fixed = TRUE)){
+    ml$C_Diet_Vegan_Veggie[i] <- "Yes"
+  } else {
+    ml$C_Diet_Vegan_Veggie[i] <- "No"
+  }
+}
+dplyr::count(ml, C_Diet_Vegan_Veggie)
+```
+
+# reorder and rename size categories
+```{r ordersizecategories, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+for (i in 1:nrow(ml)){
+  if (grepl('Toy', ml$Size[i], fixed = TRUE)){
+    ml$Size[i] <- "Toy"
+  } else if (grepl('Small', ml$Size[i], fixed = TRUE)){
+    ml$Size[i] <- "Small"
+  } else if (grepl('Medium', ml$Size[i], fixed = TRUE)){
+    ml$Size[i] <- "Medium"
+  } else if (grepl('Large', ml$Size[i], fixed = TRUE)){
+    ml$Size[i] <- "Large"
+  } else {
+    ml$Size[i] <- "Giant"
+  }
+}
+ml$Size <- ordered(ml$Size, levels=c("Toy","Small","Medium","Large","Giant"))
+dplyr::count(ml, Size)
+```
+
+# Try non-ordered size categories with medium as reference
+```{r non-orderedsizecategories, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$Size2 <- factor(ml$Size, levels=c("Medium","Toy","Small","Large","Giant"),ordered=FALSE)
+dplyr::count(ml, Size2)
+```
+
+# create binary Giant breed variable
+```{r create-Giant_binary, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+Giant=c('Yes','No')
+ml$Size_Giant <- ml$Size2
+ml$Size_Giant <- str_replace(ml$Size_Giant,"Giant","Yes")
+ml$Size_Giant <- str_replace(ml$Size_Giant,"Toy","No")
+ml$Size_Giant <- str_replace(ml$Size_Giant,"Medium","No")
+ml$Size_Giant <- str_replace(ml$Size_Giant,"Small","No")
+ml$Size_Giant <- str_replace(ml$Size_Giant,"Large","No")
+dplyr::count(ml, Size_Giant)
+```
+
+# create theraeputic food category
+```{r Therapeutic_food, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$Therapeutic_Food <- as.character(ml$Therapeutic_Food)
+ml <- subset(ml, Therapeutic_Food != "NA" | Therapeutic_Food != NA)
+dplyr::count(ml, Therapeutic_Food)
+```
+
+# check visit data
+```{r visit_data, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml <- subset(ml, Visits != "NA")
+dplyr::count(ml, Visits)
+```
+
+# Not much point including data where clients are unsure of visit numbers.
+```{r visitdata2, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+ml <- subset(ml, Visits != "Unsure" | Visits != NA)
+ml <- subset(ml, Visits != "NA" | Visits != NA)
+dplyr::count(ml, Visits)
+```
+
+# rename and reorder Visits
+```{r reordervisits, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$Visits <- str_replace(ml$Visits,">3","3<")
+ml$Visits <- str_replace(ml$Visits,"0","0")
+ml$Visits <- str_replace(ml$Visits,"1","1")
+ml$Visits <- str_replace(ml$Visits,"2","2")
+ml$Visits <- str_replace(ml$Visits,"3","3")
+dplyr::count(ml, ml$Visits)
+```
+
+# Simplify as Visits2 to ensure proportionality
+```{r trysimplervisitcategories, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$Visits2 <- ml$Visits
+ml$Visits2 <- str_replace(ml$Visits2,"3<","3")
+ml$Visits2 <- str_replace(ml$Visits2,"3","3v")
+ml$Visits2 <- str_replace(ml$Visits2,"0","0v")
+ml$Visits2 <- str_replace(ml$Visits2,"1","1v")
+ml$Visits2 <- str_replace(ml$Visits2,"2","2v")
+
+dplyr::count(ml, ml$Visits2)
+```
+
+# check Meds
+```{r Medscheck, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$Meds <-as.factor(ml$Meds)
+dplyr::count(ml, Meds)
+```
+
+# check Health category
+```{r Healthcategorycheck, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, ml$Health)
+```
+
+# Tidy up Health category
+## Not much point including data where clients unsure of pet health.
+## Also need to reorder categories
+```{r tidy_Health, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml <- subset(ml, Health != "Unsure" | Health != NA)
+ml$Health <- as.factor(ml$Health)
+ml$Health <-ordered(ml$Health,levels=c("Healthy","Generally healthy with minor or infrequent problems","Significant or frequent problems","Seriously ill"))
+dplyr::count(ml, Health)
+```
+
+# create Health2 variable where serious and significant are combined
+```{r Simplify_health_categories, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+Health_severity=c('0_None','1_Mild','2_Significant')
+ml$Health2 <- ml$Health
+ml$Health2 <- str_replace(ml$Health2,"Healthy","0_None")
+ml$Health2 <- str_replace(ml$Health2,"Generally healthy with minor or infrequent problems","1_Mild")
+ml$Health2 <- str_replace(ml$Health2,"Significant or frequent problems","2_Significant")
+ml$Health2 <- str_replace(ml$Health2,"Seriously ill","2_Significant")
+ml$Health2 <-ordered(ml$Health2,levels=c("0_None","1_Mild","2_Significant"))
+dplyr::count(ml, ml$Health2)
+```
+
+# create binary Health variable
+```{r create_health_binary, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+bhealth <- rep(0,nrow(ml))
+for (i in 1:nrow(ml)){
+    if (grepl('healthy', ml$Health[i], ignore.case = TRUE)){
+      # 0 is good health 
+      bhealth[i] <- 0
+       }
+    else {
+       bhealth[i] <- 1
+    }
+}
+#Keep as a variable not factor!
+ml$Health_Binary <- as.numeric(bhealth)
+rm(bhealth)
+#Checks and Balances, hey it's VERY unbalanced
+dplyr::count(ml, Health_Binary)
+
+```
+
+# create binary Any health problem variable
+```{r create_any health_problem_binary, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+bhealth2 <- rep(0,nrow(ml))
+for (i in 1:nrow(ml)){
+    if (grepl('0_None', ml$Health2[i], ignore.case = TRUE)){
+      # 0 is good health 
+      bhealth2[i] <- 0
+       }
+    else {
+       bhealth2[i] <- 1
+    }
+}
+#Keep as a variable not factor!
+ml$Any_Health_Problem <- as.numeric(bhealth2)
+rm(bhealth2)
+#Checks and Balances, better balanced this time.
+dplyr::count(ml, Any_Health_Problem)
+
+```
+
+# check D_Diet
+```{r checkD_Diet, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, D_Diet)
+```
+
+# Not much point including those that are unsure.
+```{r tidy__Diet, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+
+ml <- subset(ml, D_Diet != "Unsure" | D_Diet != NA)
+dplyr::count(ml, D_Diet) 
+```
+
+# Not much point including diets where there are small numbers
+```{r tidy_D_Diet2, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml <- subset(ml, D_Diet != "Mixture" | D_Diet != NA)
+ml <- subset(ml, D_Diet != "Insect-based" | D_Diet != NA)
+ml <- subset(ml, D_Diet != "Meat-based – lab-grown" | D_Diet != NA)
+dplyr::count(ml, D_Diet) 
+```
+
+# create binary D_Vegan variable
+```{r create_D_Vegan binary, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$D_Diet_Vegan <- ml$D_Diet
+for (i in 1:nrow(ml)){
+  if (grepl('Vegan', ml$D_Diet_Vegan[i], fixed = TRUE)){
+    ml$D_Diet_Vegan[i] <- "Yes"
+  } else {
+    ml$D_Diet_Vegan[i] <- "No"
+  }
+}
+dplyr::count(ml, D_Diet_Vegan)
+```
+
+# create binary D_Raw variable
+```{r create_D_Raw_binary, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$D_Diet_Raw <- ml$D_Diet
+for (i in 1:nrow(ml)){
+  if (grepl('raw', ml$D_Diet_Raw[i], fixed = TRUE)){
+    ml$D_Diet_Raw[i] <- "Yes"
+  } else {
+    ml$D_Diet_Raw[i] <- "No"
+  }
+}
+dplyr::count(ml, D_Diet_Raw)
+```
+
+# create binary D_Vegan_Veggie variable
+```{r create_D_Vegan-Veggie_binary, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml$D_Diet_Vegan_Veggie <- ml$D_Diet
+for (i in 1:nrow(ml)){
+  if (grepl('Veg', ml$D_Diet_Vegan_Veggie[i], fixed = TRUE)){
+    ml$D_Diet_Vegan_Veggie[i] <- "Yes"
+  } else {
+    ml$D_Diet_Vegan_Veggie[i] <- "No"
+  }
+}
+dplyr::count(ml, D_Diet_Vegan_Veggie)
+```
+
+# check Decision_maker
+```{r check_Decision_Maker, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml, Decision_Maker)
+```
+
+# Better only to include data from clients that were primary decision makers as likely to be more accurate.
+```{r tidy_Decision_Maker, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml <- subset(ml, Decision_Maker == "Primary decision-maker")
+dplyr::count(ml, Decision_Maker)
+```
+
+# Let's just keep those we will need
+```{r final_column_check, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+ml <- subset(ml,select = c("Location", "setting","Urban", "Education", "Education_S","Education_S2", "Animal_Career",
+                           "Animal_Career2","Animal_Career_BINARY", "Income","Income2","C_Age", "C_Age2", "C_Gender",
+                           "C_Diet", "C_Diet_Vegan", "C_Diet_Vegan_Veggie", "D_Age", "D_Age_quant",
+                           "Size", "Size2", "Size_Giant", "D_Sex", "D_Neuter", "Therapeutic_Food","Meds", "D_Diet",
+                           "D_Diet_Vegan", "D_Diet_Vegan_Veggie", "D_Diet_Raw", "Visits", "Visits2", "Health",
+                           "Health2","Health_Binary", "Any_Health_Problem", "Location_Europe"))
+
+#check columns
+head(ml)
+```
+
+# summary data
+```{r summarise, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+describe(ml)
+```
+
+# check C_Diet category numbers
+```{r C_Diet_check, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+dplyr::count(ml,C_Diet)
+```
+
+# check D_Sex by D_Neuter
+```{r D_2sex_neuter_check, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+## two way cross tabs (xtabs) and flatten the table
+ftable(xtabs(~ D_Sex + D_Neuter, data = ml))
+```
+
+# Finally, create train and test datasets for use in logistic regression analyses
+```{r train_test}
+index <- sample(nrow(ml),nrow(ml)*0.75)
+# set seed to make partition
+set.seed(123)
+ml_train = ml[index,]
+ml_test = ml[-index,]
+```
+
+# Citations for packages
+```{r citations, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+citation("stringr")
+packageVersion("stringr")
+citation("dplyr")
+packageVersion("dplyr")
+citation("DescTools")
+packageVersion("DescTools")
+citation("car")
+packageVersion("car")
+citation("foreign")
+packageVersion("foreign")
+citation("ggplot2")
+packageVersion("ggplot2")
+citation("Hmisc")
+packageVersion("Hmisc")
+citation("reshape2")
+packageVersion("reshape2")
+citation("tidyverse")
+packageVersion("tidyverse")
+citation("broom")
+packageVersion("broom")
+citation("aod")
+packageVersion("aod")
+citation("glmtoolbox")
+packageVersion("glmtoolbox")
+citation("fmsb")
+packageVersion("fmsb")
+citation("uwot")
+packageVersion("uwot")
+citation("ggthemes")
+packageVersion("ggthemes")
+citation("ggforce")
+packageVersion("ggforce")
+citation("readxl")
+packageVersion("readxl")
+citation("ROCR")
+packageVersion("ROCR")
+citation("pROC")
+packageVersion("pROC")
+citation("caret")
+packageVersion("caret")
+citation("xgboost")
+packageVersion("xgboost")
+citation("smotefamily")
+packageVersion("smotefamily")
+citation("rsample")
+packageVersion("rsample")
+citation("mltools")
+packageVersion("mltools")
+citation("data.table")
+packageVersion("data.table")
+citation("heatmaply")
+packageVersion("heatmaply")
+citation("rstatix")
+packageVersion("rstatix")
+citation("dbscan")
+packageVersion("dbscan")
+citation("corrplot")
+packageVersion("corrplot")
+citation("showtext")
+packageVersion("showtext")
+citation("cluster")
+packageVersion("cluster")
+citation("factoextra")
+packageVersion("factoextra")
+citation("clusterSim")
+packageVersion("clusterSim")
+citation("RColorBrewer")
+packageVersion("RColorBrewer")
+citation("IHW")
+packageVersion("IHW")
+```
+
+```{r savedata, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, message=FALSE}
+if (SAVE){
+  save(ml, file = "ml_read_data_101.RData")
+}
+```
+
+

@@ -1,0 +1,885 @@
+---
+title: "XGBoost Customisable code"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+# SETUP
+```{r loadup, include=FALSE, echo = FALSE, results='hide', cache=FALSE}
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE, cache=FALSE)
+#AUTO are we running automatically from another script?
+AUTO <- FALSE
+#Load the pre-processed data if we already have that
+LOAD <- TRUE
+
+#Choice of 101 or 102 (with or without 2ary decision makers)
+version=102
+
+#Choice of Any or Severe
+health ="Severe" 
+
+#Do all or just reduced model?
+SKIPFULL <- FALSE
+
+#Plot the correlations again?
+corri <- FALSE
+
+#Use What age?
+DAge <- "quant"
+
+#How to augment the training data
+Meth_augment <- "bruteforce"
+reps <- 5 
+BW <- FALSE # Print raw black and white Importance?
+
+#######
+#Set the default metaparameters manually if just doing the one run. Over write these if using an auto script (above)
+nrounds <- 600 #If zero, optimize with cv...
+min_child_weight=25
+depth = 6
+
+#Create dummy output files
+df_summary <- data.frame(dummy=c(nrounds,reps))
+df_summary_abs <- data.frame(dummy=c(nrounds,reps))
+
+if (AUTO){
+  #load the meta data
+  load("instructions.rds")
+
+  LOAD <- instructions[["LOAD"]]
+  version = instructions[["version"]][1]
+  health = instructions[["health"]][1]
+  min_child_weight = instructions[["child_weight"]][1]
+  depth = instructions[["max_depth"]][1]
+  nrounds <- instructions[["nrounds"]][1]
+  corri <- instructions[["corri"]][1]
+  update <- paste("Running automatically with:",
+              LOAD,
+              "Version:", version,
+              "Health:", health,
+              "nrounds:", nrounds)
+con <- file("status.csv", "a")
+writeLines(update, 
+           con)
+close(con)
+  print("INSIDE MARKUP")
+  print(paste(instructions, collapse=":"))
+  write(update, "status.txt", append = TRUE)
+  write(paste(instructions, collapse=":"),
+        "status.txt", append = TRUE)
+} else{
+  update <- paste("Running manual:",
+              LOAD,
+              "Version:", version,
+              "Health:", health,
+              "nrounds:", nrounds)
+  con <- file("status.csv", "a")
+  writeLines(update, 
+           con)
+  close(con)
+}
+
+if (LOAD){
+  source("load_packages.r")
+  load(paste0("ml_read_data_",version,".RData") )
+} else{
+  # So re-run the read script
+  knitr::knit(paste0("Read_data_",version,".rmd"),output="temp")
+}
+
+```
+
+#Functions
+```{r checkload}
+head(ml)
+nicenames <- function (strings, find, replacement){
+  #replace cumbersome names with nice ones
+  strings[grep(find, strings)] <- replacement
+  strings
+}
+
+fprint <- function(data) {
+  print(data)
+  if (is.data.frame(data)){ 
+    write.table(data, "status.txt", append = TRUE)
+    } else {
+    write(data, "status.txt", append = TRUE)
+    }
+  }
+```
+# XGBoost ALL FEATURES
+## Pre-process to numeric
+```{r preprocess_XG_ALL}
+fprint(paste("\n\n\nBEGINNING THE FULL MODE WITH:",health,"_",version) )
+# Remove these models from the environment in case confusion later.
+# If they don't exist a warning is displayed but code continues to run
+suppressWarnings(rm(cv_res))
+suppressWarnings(rm(bstSparse))
+
+locations <- dplyr::select(ml, Location)
+locations <- one_hot(as.data.table(locations), dropUnusedLevels = TRUE)
+factors <- cbind(locations) #legacy line!
+
+fnames <- names(factors)
+fnames <- nicenames(fnames,"European","European")
+fnames <- nicenames(fnames,"UK","UK")
+fnames <- nicenames(fnames,"Oceania","Oceania")
+fnames <- nicenames(fnames,"America","America")
+fnames <- nicenames(fnames,"Other","Other")
+
+names(factors) <- fnames
+
+if (tolower(DAge=="quant")) {
+ordered <- as.data.frame(
+  cbind(ordered(ml$Income), 
+             ordered(ml$Education),
+             ordered(ml$D_Age_quant),
+             ordered(ml$C_Age), 
+             ordered(ml$Size),
+             factor(ml$Visits,
+                levels=c("0","1","2","3","3<"),
+                order = TRUE)))
+  
+} else {
+  ordered <- as.data.frame(cbind(ml$Income, ml$Education,
+                               ml$D_Age, 
+                               ml$C_Age, ml$Size,
+                               factor(ml$Visits,
+                levels=c("0","1","2","3","3<"),
+                order = TRUE)))}
+
+names(ordered) <- c("Income","Education", 
+                    "Dog Age", 
+                    "Owner Age", "Size", 
+                    "Visits")
+
+numeric <- dplyr::select(ml,C_Gender)
+numeric$C_Gender<-as.numeric(numeric$C_Gender)-1
+numeric$Urban <- as.numeric(factor(ml$Urban, 
+                                      levels=c("No", "Yes"),
+                                      order=TRUE)) -1
+numeric$D_Sex<-as.numeric(ml$D_Sex)-1
+numeric$Neuter<-as.numeric(ml$D_Neuter)-1
+numeric$Meds<-as.numeric(ml$Meds )-1
+numeric$D_Diet_Vegan<-as.numeric(as.factor(ml$D_Diet_Vegan))-1
+numeric$D_Diet_Raw<-as.numeric(as.factor(ml$D_Diet_Raw))-1
+numeric$C_Diet_Vegan<-as.numeric(as.factor(ml$C_Diet_Vegan))-1
+
+numeric$BIN_Animal_Career <- as.numeric(as.factor(ml$Animal_Career_BINARY)) -1
+numeric$Therapeutic_Food <- as.numeric(as.factor(ml$Therapeutic_Food)) -1
+if (tolower(health) == "any") {
+  numeric$Health_Binary <- ml$Any_Health_Problem
+} else if (tolower(health) == "severe"){
+    numeric$Health_Binary <- ml$Health_Binary 
+} else {
+  stop(paste("OOPS ERROR, YOU'RE HEALTH VARIABLE WAS",health))
+}
+
+names(numeric)  <- c("Owner Gender", 
+                     "Urban",
+                    "Dog Sex", "Neuter status",
+                    "Meds",
+                    "Dog Vegan Diet",
+                    "Dog Diet Raw",
+                    "Owner Vegan Diet",
+                    "Animal Career",
+                    "Therapeutic Food", 
+                    "Health_Binary")
+if (version=="102"){
+  Decision <- as.numeric(as.factor(ml$Primary_Decision_Maker))
+  Decision <- data.frame(Decision=Decision)
+  numeric <- cbind(Decision,numeric)
+}
+
+XGdata <- cbind(factors,ordered,numeric)
+```
+
+# Pseudo correlation matrix given all data as numeric
+threshold for significance removed from corrplots following Reviewer request sig.level=bht
+changed to sig.level=1
+```{r Corrplot}
+#Only do this with Any Health since idental at this point
+if ( (tolower(health) == "any") & (corri == TRUE)) {
+
+    WRITE=TRUE
+    cdata <- dplyr::select(XGdata,-c("Health_Binary"))
+    cdata <- cdata[complete.cases(cdata),]
+    
+    #Old method
+    #cor.mat <- round(cor(cdata,use="pairwise.complete.obs", method="kendall"),2)
+    
+    # get the correlation matrix using rstatix, slower but allows direct p-val return; and the correlation values itself are identical.
+    corMatrix <- rstatix::cor_mat(cdata, method = "kendall")
+    #Convert first column to rownames
+    corMatrix <- corMatrix %>% remove_rownames %>% column_to_rownames(var="rowname")
+    
+    # get the p.values
+    corMatrix_p <- as.data.frame(corMatrix %>% rstatix::cor_get_pval())
+    #  drop the p-values to allow extra functions
+    cor.Mat <- as.matrix(DescTools::StripAttr(corMatrix, attr_names = "pvalue") )
+    
+    #Log all but the rownames
+    tmpnames <- dplyr::select(corMatrix_p,rowname) 
+    corMatrix_p <- dplyr::select(corMatrix_p,-rowname)
+    lgcorMatrix_p <- log10(corMatrix_p)
+    logmatrix <- cbind(tmpnames,round(lgcorMatrix_p,2))
+    
+    if (WRITE){
+      write.csv(corMatrix_p, paste0("corr-p-values_",version,".csv") )
+      write.csv(round(corMatrix,2), paste0("corr-values_",version,".csv") )
+      write.csv(logmatrix,paste0("corr-logp-values_",version,".csv") )
+      }
+    
+    rm(lgcorMatrix_p,tmpnames)
+    
+    hc <- hclust(as.dist(1-cor.Mat), method = "ward.D2")
+    # Plot here first
+    
+    # Then save figure
+    tiff(paste0("figures/hclust_",version,".tif"),
+      width     = 3.25,
+      height    = 3.25,
+      units     = "in",
+      res       = 300,
+      pointsize = 4
+    )
+    plot(hc, hang=-1, cex=0.9)
+    dev.off()
+    
+    # Using Kendall which is good for ranks
+    cex=1.3
+    srt=45
+    tmp <- as.matrix(corMatrix_p)
+    rownames(tmp) <- rownames(cor.Mat)
+    
+    # Calculate a BH threshold
+    # Get all the p-values as a Vector, just get the bottom part (don't duplicate)
+    ps <- tmp[lower.tri(tmp,diag=FALSE)]
+    # Calculating bht would allow us to label the significant correlations
+    # Reviewers prefer us to leave in even the insignificant correlations. 
+    bht <- get_bh_threshold(ps,alpha=0.05)  
+    
+    corrplot::corrplot(cor.Mat, p.mat = tmp, type="lower", 
+                       order="hclust", hclust.method="ward.D2",
+                       tl.col="black", insig = "blank", 
+                       sig.level = 1, tl.srt=45,tl.cex=cex/2,
+                       na.label=" ",cl.cex = cex/2)
+    
+    #Then save figure
+    tiff(paste0("figures/HealthBinaryCorPlot_",version,".tif"),  
+      width     = 3.25,
+      height    = 3.25,
+      units     = "in",
+      res       = 300,
+      pointsize = 4)
+      par(bg=NA)
+    corrplot::corrplot(cor.Mat, p.mat = tmp, type="lower",
+                       order="hclust", hclust.method="ward.D2",
+                       insig = "blank", tl.col="black", 
+                       sig.level = 1, tl.srt=45, 
+                       tl.cex=cex, na.label=" ",cl.cex = cex)
+    
+    dev.off()
+} #End of the Corriplot routines
+```
+
+#Functional Importance
+```{r funcional_importance}
+do_importance <- function(model, RedOrFull){
+
+importance_matrix <- xgb.importance(model = model)
+fprint(importance_matrix)
+xgb.plot.importance(importance_matrix = importance_matrix)
+importance_matrix <- importance_matrix %>%
+  dplyr::select(-Gain)
+
+if (BW){
+    tiff(paste0(
+      "figures/XGImpBWReduced_Simple_",
+      version,health,".tif") )
+    xgb.plot.importance(
+      importance_matrix = importance_matrix)
+    dev.off()
+}
+#importance_matrix <- dplyr::select(importance_matrix,c(Feature,Importance, Frequency, Cover))
+
+m_imp <-reshape::melt(importance_matrix,id_vars=Feature)
+
+#Check the order of columns is right
+names(m_imp) <- c("Feature", 
+                  "XGBoost Parameter", "Value")
+
+
+
+
+
+tiff(paste0("figures/XGImp",RedOrFull,"_",
+            version, health,".tif"),  
+  width     = 6.5,
+  height    = 3.25,
+  units     = "in",
+  res       = 300,
+  pointsize = 4)
+  par(bg=NA)
+  p <- ggplot(m_imp,
+            aes(x=reorder(Feature,-Value),
+                y=Value,fill=`XGBoost Parameter`))+
+    geom_bar(position="stack",
+             stat="identity")+
+    xlab("Feature")+
+    ylab("Value (Au)")+
+  theme_bw()+
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+          legend.position=c(0.98,0.75),
+                   legend.justification="right")
+  print(p)
+dev.off()
+print(p)
+max_i <- max(importance_matrix$Importance)
+output <- importance_matrix %>%
+  mutate(Percentage=100*Importance/max_i)
+
+write.table(output,
+            "status.csv",
+            sep=",",
+            row.names=FALSE,
+            append = TRUE)
+}
+```
+
+#Augment Train Data Function
+```{r Augment}
+augment <- function(trainX,trainY,method){
+  if (method == "SMOTE")
+      {train.SMOTE <- SMOTE(trainX,trainY,K=50,dup_size=100)
+      trainX <- train.SMOTE$data[,1:ncol(train)-1]
+      trainY <- as.numeric(train.SMOTE$data[,ncol(train)])
+      train.SMOTE <- SMOTE(trainX,trainY,K=5,dup_size=6)
+      trainX <- train.SMOTE$data[,1:ncol(train)-1]
+      trainY <- as.numeric(train.SMOTE$data[,ncol(train)])
+      value <- list(trainX, trainY)
+      names(value) <- c("trainX", "trainY")
+      return (value)
+  } else if (method=="bruteforce"){
+      #trouble with this method is it may create extra levels...
+      #somehow need to constrain to 0 to max level AND add or subtract but still not go <0.
+      #get column max and min
+      cmax <- train %>% summarise_if (is.numeric, max)
+      cmin <- train %>% summarise_if(is.numeric, min)
+      #Firstly BALANCE the dataset
+      #reps set at the top [ reps!]
+      bigTrain <- train
+      classtrain <- subset(train, Health_Binary==0)
+      for (i in 1:reps){
+          AugmentMe <- as.data.frame(
+            matrix(rbinom(ncol(classtrain)*nrow(classtrain), 
+                                                   1, .2),
+                                            ncol=ncol(classtrain)) )
+          names(AugmentMe) <- names(classtrain)
+          classtrain <- subset(train,Health_Binary==0)
+          #last column is the outcome, dont change that
+          AugmentMe[,ncol(AugmentMe)] <- 0
+          if((reps %% 2) == 0){
+          newbatch <- classtrain+AugmentMe
+          } else{
+           newbatch <- classtrain-AugmentMe
+          }
+          
+          for (c in 1:ncol(train)){
+            mycol = names(cmax[c])
+            newbatch <- subset(newbatch, get(mycol) <= as.numeric(cmax[c]))
+            newbatch <- subset(newbatch, get(mycol) >= as.numeric(cmin[c]))
+          }      
+          bigTrain <- rbind(bigTrain,newbatch )
+      }
+      train <- bigTrain
+    # NOW just augment generally.  
+
+      bigTrain <- train
+      for (i in 1:reps){
+          AugmentMe <- as.data.frame(matrix(rbinom(ncol(train)*nrow(train), 1, .2), ncol=ncol(train)) )
+          names(AugmentMe) <- names(train)
+          #last column is the outcome, dont change that
+          AugmentMe[,ncol(AugmentMe)] <- 0
+          if((reps %% 2) == 0){
+          newbatch <- train+AugmentMe
+          } else{
+           newbatch <- train-AugmentMe
+          }
+          
+          for (c in 1:ncol(train)){
+            mycol = names(cmax[c])
+            newbatch <- subset(newbatch, get(mycol) <= as.numeric(cmax[c]))
+            newbatch <- subset(newbatch, get(mycol) >= as.numeric(cmin[c]))
+          }      
+          bigTrain <- rbind(bigTrain,newbatch )
+      }
+      train <- bigTrain
+      trainX <- train[,1:ncol(train)-1]
+      trainY <- train[,ncol(train)]
+      value <- list(trainX, trainY)
+      names(value) <- c("trainX", "trainY")
+      return (value)
+  } else {
+      value <- list(trainX, trainY)
+      names(value) <- c("trainX", "trainY")
+      return (value)
+        
+      }
+}
+```
+
+#Train XGboost FULL
+```{r TrainSimple, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, warning=FALSE, message=FALSE,results='hide'}
+# Remove these models from the environment in case confusion later.
+# If they don't exist a warning is displayed but code continues to run
+if (SKIPFULL==FALSE){
+  fprint(paste("TRAINING XGBOOST WITH THE FULL MODEL WITH:",health,"_",version) )
+  
+  update <- paste("Full Model (Training):",
+                  health,"_", version)
+  con <- file("status.csv", "a")
+  writeLines(update,  con)
+  close(con)
+  suppressWarnings(rm(cv_res))
+  suppressWarnings(rm(bstSparse))
+  XGdata <- XGdata[complete.cases(XGdata),]
+  #XGdata <- dplyr::select(XGdata, -D_Age_quant )
+  
+
+    # OR  Better split with stratification to avoid a potentially empty
+    # dependent variable set.
+    set.seed(2020)
+    XGd <- initial_split(XGdata, prop = 0.7, strata = Health_Binary)
+    
+    XGd_valid <- initial_split(training(XGd), prop = 0.7, strata = Health_Binary)
+    
+    train <- training(XGd_valid)
+    train <-as.data.frame(training(XGd))
+    
+    validXG <- testing(XGd_valid)
+    train<- as.data.frame(train)
+    trainX<-train[,1:(ncol(train)-1)]
+    trainY<-train[,ncol(train)]
+    augments <- augment(trainX,trainY, method = Meth_augment)
+    trainX <- augments[["trainX"]]
+    trainY <- augments[["trainY"]]
+    
+    train <- xgb.DMatrix(as.matrix(trainX), label=trainY)
+    
+    validXG <- as.data.frame(validXG)
+    validX <- validXG[,1:(ncol(validXG)-1)]
+    
+    validY <- validXG[,ncol(validXG)]
+    valid <- xgb.DMatrix(as.matrix(validX), label=validY)
+    
+    #Models work best if training data augmented
+    
+    watchlist = list(eval=valid, train=train)
+    
+    #Two alternative methods. Bruteforce seems OK.
+    length(trainY[trainY==0])
+    length(trainY[trainY>0])
+    #new method
+    test<-as.data.frame(testing(XGd))
+    testX<-test[,1:ncol(test)-1]
+    testY<-test[,ncol(test)]
+    #weight<-nrow(ml)/(1-sum(ml$Bhealth)) wont work now changed to factor wat above
+    weight=1
+    #weight <- weight^0.5 #some say otherwise skews
+    param <- list(max.depth = depth, eta = 0.01, nthread = 12,
+                  objective = "multi:softprob", num_class = 2,
+                  min_child_weight=min_child_weight,
+                  subsample=0.5, gamma = 0.1, booster='gbtree')
+    #"binary:logistic" or "multi:softprob" 
+    #If using binary:logistic then delete the class number parameter!
+      
+    if (nrounds == 0) {
+    #This is one quick way to tune, remembering that iterations is kind of the same as number of trees.
+        cv_res <- xgb.cv(data = as.matrix(trainX), 
+                         label = trainY, params=param, 
+                         nrounds = nrounds,
+                         early_stopping_rounds=5,
+                         print_every_n=500,nfold=5,
+                         eval_metric='auc')
+        
+        nrounds <- cv_res$best_iteration
+        }
+    
+    bstSparse <- xgb.train(params=param,
+                         data = train, 
+                         nrounds = nrounds,
+                         print_every_n=100,
+                         eval_metric="auc",
+                         watchlist = watchlist,
+                         early_stopping_rounds=100)
+    
+    #Recreate the original train data to avoid confusion later:
+    ##### Never want to accidental mess with the augmented data again.
+    train <-as.data.frame(training(XGd))
+    trainX<-train[,1:(ncol(train)-1)]
+    trainY<-train[,ncol(train)]
+    #########
+    
+    #Facile test on train.... to delete
+    pred <-predict(bstSparse,as.matrix(trainX), reshape=TRUE)
+    prediction <- as.numeric(pred[,2] > 0.30)
+    rocker <- roc(trainY, pred[,2])
+    confusionMatrix(as.factor(prediction),as.factor(trainY))
+    ######
+}
+```
+#ROC FULL
+```{r roc1_ALL}
+if (!SKIPFULL){
+fprint(paste("\nFULL MODEL ROC WITH:",health,"_",version) )
+
+pred <-predict(bstSparse,as.matrix(testX), reshape=TRUE)
+pred_obj <- prediction(pred[,2],testY)
+   
+xgb.perf <- performance(pred_obj, "tpr", "fpr")
+
+#Remember this is the Full model
+if (tolower(health)=="any"){
+  pts <- seq(0.1, 0.9, by=0.1)
+} else if (tolower(health)=="severe"){
+  pts <- c(0.14, 0.18, 0.22)
+}
+
+text = 1.5 # Text size
+par(bg=NA, cex=1.5/2, cex.axis=1.5/2, cex.lab=1.5/2)
+ROCR::plot(xgb.perf,
+     avg="threshold",
+     colorize=TRUE,
+     lwd=1,
+     main="XGBoost: Mild, significant or serious illness",
+     print.cutoffs.at=pts,
+     cutoff.label.function = function(x) {round(x, 2) },
+     text.adj=c(-1, 1),
+     colorkey.relwidth=1) 
+
+grid(col="lightgray")
+axis(1, at=seq(0, 1, by=0.1))
+axis(2, at=seq(0, 1, by=0.1))
+abline(v=c(0.1, 0.3, 0.5, 0.7, 0.9), col="lightgray", lty="dotted")
+abline(h=c(0.1, 0.3, 0.5, 0.7, 0.9), col="lightgray", lty="dotted")
+lines(x=c(0, 1), y=c(0, 1), col="black", lty="dotted")
+
+tiff(paste0("figures/xgROCsimpleFull_",version,health,".tif"),
+  width     = 3.25,
+  height    = 3.25,
+  units     = "in",
+  res       = 300,
+  pointsize = 4
+)
+par(bg=NA, cex=1.5, cex.axis=1.5, cex.lab=1.5)
+ROCR::plot(xgb.perf,
+     avg="threshold",
+     colorize=TRUE,
+     lwd=3,
+     main="",
+     print.cutoffs.at=pts,
+     cutoff.label.function = function(x) {round(x, 2) },
+     text.adj=c(-1, 1),
+     colorkey.relwidth=1) 
+grid(col="lightgray")
+axis(1, at=seq(0, 1, by=0.1))
+axis(2, at=seq(0, 1, by=0.1))
+abline(v=c(0.1, 0.3, 0.5, 0.7, 0.9), col="lightgray", lty="dotted")
+abline(h=c(0.1, 0.3, 0.5, 0.7, 0.9), col="lightgray", lty="dotted")
+lines(x=c(0, 1), y=c(0, 1), col="black", lty="dotted")
+dev.off()
+
+res <- pROC::roc(testY, pred[,2],ci=TRUE, conf.level=0.99)
+res$auc
+res$ci
+fprint(paste("\nFull model ROC, AUC:",res$auc) )
+fprint(paste("99% confidence:",res$ci) )
+cis <- paste(round(res$ci,3), collapse=":")
+cis <- paste("Full ROC:",health, version,
+             cis)
+con <- file("status.csv", "a")
+writeLines(cis, 
+           con)
+close(con)
+
+}
+```
+# FULL XGboost Prediction
+Just an example threshold
+```{r pred_all_1}
+if (!SKIPFULL){
+# CHOOSE A THRESHOLD FROM THE ROC
+thresh=0.30
+pred <-predict(bstSparse,as.matrix(testX), reshape=TRUE)
+prediction <- as.numeric(pred[,2] > thresh)
+confusionMatrix(as.factor(prediction),as.factor(testY))
+}
+```
+# Calculate importance FULL
+```{r reduced_full}
+if (!SKIPFULL){
+  fprint(paste("\nIMPORTANCE WITH FULL MODEL:",
+             health,"_",version) )
+
+do_importance(bstSparse, "Full")
+}
+```
+
+#Reduced XGBoost
+Now XGBoost on the data without meds and visits or therapeutic foods
+##Simple XGBoost on reduced variable set, still Any Health Issue binary
+# Preprocess reduced XGBoost
+```{r preprocess_XG_reduced, echo=TRUE, include=TRUE, warning=FALSE, errors=FALSE, warning=FALSE, message=FALSE,results='hide'}
+suppressWarnings(rm(cv_res))
+suppressWarnings(rm(bstSparse))
+fprint(paste("\n\n\nBEGINNING A REDUCED MODEL WITH:",
+             health,"_",version) )
+locations <- dplyr::select(ml, Location)
+locations <- one_hot(as.data.table(locations), dropUnusedLevels = TRUE)
+
+factors <- cbind(locations)
+
+fnames <- names(factors)
+fnames <- nicenames(fnames,"European","European")
+fnames <- nicenames(fnames,"UK","UK")
+fnames <- nicenames(fnames,"Oceania","Oceania")
+fnames <- nicenames(fnames,"America","America")
+fnames <- nicenames(fnames,"Other","Other")
+
+names(factors) <- fnames
+
+if (tolower(DAge=="quant")) {
+  ordered <- as.data.frame(cbind(ml$Income, ml$Education,
+                               ordered(ml$D_Age_quant), 
+                               ml$C_Age, ml$Size
+                               ))
+  
+} else {
+  ordered <- as.data.frame(cbind(ml$Income, ml$Education,
+                               ml$D_Age, 
+                               ml$C_Age, ml$Size
+                               ))}
+
+names(ordered) <- c("Income","Education", 
+                    "Dog Age", 
+                    "Owner Age", "Size"
+                    )
+
+numeric <- dplyr::select(ml,C_Gender)
+numeric$C_Gender<-as.numeric(numeric$C_Gender)-1
+numeric$Urban <- as.numeric(factor(ml$Urban, 
+                                      levels=c("No", "Yes"),
+                                      order=TRUE)) -1
+numeric$D_Sex<-as.numeric(ml$D_Sex)-1
+numeric$Neuter<-as.numeric(ml$D_Neuter)-1
+numeric$D_Diet_Vegan<-as.numeric(as.factor(ml$D_Diet_Vegan))-1
+
+numeric$D_Diet_Raw<-as.numeric(as.factor(ml$D_Diet_Raw))-1
+numeric$C_Diet_Vegan<-as.numeric(as.factor(ml$C_Diet_Vegan))-1
+
+numeric$BIN_Animal_Career <- as.numeric(as.factor(ml$Animal_Career_BINARY)) -1
+if (tolower(health) == "any") {
+  numeric$Health_Binary <- ml$Any_Health_Problem 
+} else if (tolower(health) == "severe"){
+    numeric$Health_Binary <- as.numeric(ml$Health_Binary) 
+} else {
+  stop(paste("OOPS ERROR, YOU'RE HEALTH VARIABLE WAS",health))
+}
+
+names(numeric)  <- c("Owner Gender", 
+                     "Urban",
+                    "Dog Sex", "Neuter status",
+                    "Dog Vegan Diet",
+                    "Dog Diet Raw",
+                    "Owner Vegan Diet",
+                    "Animal Career",
+                    "Health_Binary")
+
+if (version=="102"){
+  Decision <- as.numeric(as.factor(ml$Primary_Decision_Maker))
+  Decision <- data.frame(Decision=Decision)
+  numeric <- cbind(Decision,numeric)
+}
+
+XGdata <- cbind(factors,ordered,numeric)
+#XGdata$Health_Binary <- XGdata$Health_Binary-1
+
+```
+
+#Train Reduced XG
+```{r train_XG_reduced}
+set.seed(2020)
+  
+update <- paste("Reduced Model (Training):",
+                health,"_", version)
+con <- file("status.csv", "a")
+writeLines(update,  con)
+close(con)
+
+XGd <- initial_split(XGdata, prop = 0.7, strata = Health_Binary)
+
+XGd_valid <- initial_split(training(XGd), prop = 0.7, strata = Health_Binary)
+
+train <- training(XGd_valid)
+train <-as.data.frame(training(XGd))
+
+validXG <- testing(XGd_valid)
+train<- as.data.frame(train)
+trainX<-train[,1:(ncol(train)-1)]
+trainY<-train[,ncol(train)]
+augments <- augment(trainX,trainY, method = Meth_augment)
+trainX <- augments[["trainX"]]
+trainY <- augments[["trainY"]]
+
+train <- xgb.DMatrix(as.matrix(trainX), label=trainY)
+
+validXG <- as.data.frame(validXG)
+validX <- validXG[,1:(ncol(validXG)-1)]
+
+validY <- validXG[,ncol(validXG)]
+valid <- xgb.DMatrix(as.matrix(validX), label=validY)
+
+#Models work best if training data augmented
+
+watchlist = list(eval=valid, train=train)
+
+#Two alternative methods. Bruteforce seems OK.
+length(trainY[trainY==0])
+length(trainY[trainY>0])
+#new method
+test<-as.data.frame(testing(XGd))
+testX<-test[,1:ncol(test)-1]
+testY<-test[,ncol(test)]
+#weight<-nrow(ml)/(1-sum(ml$Bhealth)) wont work now changed to factor wat above
+weight=1
+#weight <- weight^0.5 #some say otherwise skews
+param <- list(max.depth = depth, eta = 0.01, nthread = 10,
+              objective = "multi:softprob", num_class = 2,
+              min_child_weight=min_child_weight,
+              subsample=0.5, gamma = 0.1, booster='gbtree')
+#"binary:logistic" or "multi:softprob" 
+#If using binary:logistic then delete the class number parameter!
+  
+if (nrounds == 0) {
+#This is one quick way to tune, remembering that iterations is kind of the same as number of trees.
+    cv_res <- xgb.cv(data = as.matrix(trainX), 
+                     label = trainY, params=param, 
+                     nrounds = 2000,
+                     early_stopping_rounds=5,
+                     print_every_n=500,nfold=5,
+                     eval_metric='auc')
+    
+    nrounds <- cv_res$best_iteration
+    }
+
+bstSparse <- xgb.train(params=param,
+                     data = train, 
+                     nrounds = nrounds,
+                     print_every_n=100,
+                     eval_metric="auc",
+                     watchlist = watchlist,
+                     early_stopping_rounds=100)
+
+#Recreate the original train data to avoid confusion later:
+##### Never want to accidental mess with the augmented data again.
+train <-as.data.frame(training(XGd))
+trainX<-train[,1:(ncol(train)-1)]
+trainY<-train[,ncol(train)]
+#########
+
+```
+
+
+#ROC reduced
+```{r roc1_RED}
+fprint(paste("\n\n\nREDUCED MODEL ROC WITH:",
+             health,"_",version) )
+pred <-predict(bstSparse,as.matrix(testX), reshape=TRUE)
+pred_obj <- prediction(pred[,2],testY)
+   
+xgb.perf <- performance(pred_obj, "tpr", "fpr")
+#Remember this is the reduced model
+if (tolower(health)=="any") {
+  pts <- seq(0.2, 0.6, by=0.1)
+  } else if (tolower(health)=="severe") {
+  pts <- c(0.10, 0.06, 0.05)    # seq(0.10, 0.18, by=0.02)
+  } else pts <- c() # empty vector safest
+text = 1.5 # Text size
+par(bg=NA, cex=1.5/2, cex.axis=1.5/2, cex.lab=1.5/2)
+ROCR::plot(xgb.perf,
+     avg="threshold",
+     colorize=TRUE,
+     lwd=1,
+     main=paste("XGBoost:Reduced:",health),
+     print.cutoffs.at=pts,
+     cutoff.label.function = function(x) {round(x, 3) },
+     text.adj=c(-0.5, 0.9),
+     text.cex=0.5) 
+grid(col="lightgray")
+axis(1, at=seq(0, 1, by=0.1))
+axis(2, at=seq(0, 1, by=0.1))
+abline(v=c(0.1, 0.3, 0.5, 0.7, 0.9), col="lightgray", lty="dotted")
+abline(h=c(0.1, 0.3, 0.5, 0.7, 0.9), col="lightgray", lty="dotted")
+lines(x=c(0, 1), y=c(0, 1), col="black", lty="dotted")
+tiff(paste0("figures/XGROCsimpleReduced_",
+            version,health,".tif"),
+  width     = 3.25,
+  height    = 3.25,
+  units     = "in",
+  res       = 300,
+  pointsize = 4
+)
+par(bg=NA, cex=1.5, cex.axis=1.5, cex.lab=1.5)
+ROCR::plot(xgb.perf,
+     avg="threshold",
+     colorize=TRUE,
+     lwd=3,
+     main="",
+     print.cutoffs.at=pts,
+     cutoff.label.function = function(x) {round(x, 3) },
+     text.adj=c(-0.3, 1.3),
+     colorkey.relwidth=1) 
+grid(col="lightgray")
+axis(1, at=seq(0, 1, by=0.1))
+axis(2, at=seq(0, 1, by=0.1))
+abline(v=c(0.1, 0.3, 0.5, 0.7, 0.9), col="lightgray", lty="dotted")
+abline(h=c(0.1, 0.3, 0.5, 0.7, 0.9), col="lightgray", lty="dotted")
+lines(x=c(0, 1), y=c(0, 1), col="black", lty="dotted")
+dev.off()
+
+res <- pROC::roc(testY, pred[,2],ci=TRUE, conf.level=0.99)
+res$auc
+res$ci
+fprint(paste("Reduced model ROC, AUC:",res$auc) )
+fprint(paste("99% confidence:",res$ci) )
+
+cis <- paste(round(res$ci,3), collapse=":")
+cis <- paste("Reduced ROC:",health, version,
+             cis)
+con <- file("status.csv", "a")
+writeLines(cis, 
+           con)
+close(con)
+
+
+```
+# XGboostPrediction REDUCED
+```{r pred_RED_1}
+# CHOOSE A THRESHOLD FROM THE ROC
+thresh=0.775
+pred <-predict(bstSparse,as.matrix(testX), reshape=TRUE)
+prediction <- as.numeric(pred[,2] > thresh)
+confusionMatrix(factor(prediction,
+                       levels=c(0,1)),
+                as.factor(testY))
+```
+# Calculate importance REDUCED
+```{r reduced_imp}
+do_importance(bstSparse, "Reduced")
+```
+
+
+
+
