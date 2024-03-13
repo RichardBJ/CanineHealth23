@@ -1,5 +1,5 @@
 ---
-title: "Read Data 102 - include all owners not just decision makers"
+title: "Read Data 102 - include all owners not just primary caregivers"
 output:
   html_document:
     df_print: paged
@@ -8,7 +8,7 @@ output:
 ---
 
 Data from here:
-https://osf.io/8kzfv?view_only=d05ee82e58dc4c0f84448785ab839bb3
+https://osf.io/nbepu
 Original methods and full paper here:
 https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0265662
 
