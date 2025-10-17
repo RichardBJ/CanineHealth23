@@ -447,7 +447,6 @@ if (SKIPFULL==FALSE){
   XGdata <- XGdata[complete.cases(XGdata),]
   #XGdata <- dplyr::select(XGdata, -D_Age_quant )
   
-
     # OR  Better split with stratification to avoid a potentially empty
     # dependent variable set.
     set.seed(2020)
